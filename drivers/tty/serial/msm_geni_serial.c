@@ -26,6 +26,7 @@
 #include <linux/pinctrl/consumer.h>
 #include <linux/dma-mapping.h>
 #include <linux/pinctrl/devinfo.h>
+#include <uapi/linux/msm_geni_serial.h>
 
 /* UART specific GENI registers */
 #define SE_UART_LOOPBACK_CFG		(0x22C)
@@ -563,15 +564,18 @@ static int msm_geni_serial_ioctl(struct uart_port *uport, unsigned int cmd,
 	int ret = -ENOIOCTLCMD;
 
 	switch (cmd) {
-	case TIOCPMGET: {
+	case TIOCPMGET:
+	case MSM_GENI_SERIAL_TIOCPMGET: {
 		ret = vote_clock_on(uport);
 		break;
 	}
-	case TIOCPMPUT: {
+	case TIOCPMPUT:
+	case MSM_GENI_SERIAL_TIOCPMPUT: {
 		ret = vote_clock_off(uport);
 		break;
 	}
-	case TIOCPMACT: {
+	case TIOCPMACT:
+	case MSM_GENI_SERIAL_TIOCPMACT: {
 		ret = !pm_runtime_status_suspended(uport->dev);
 		break;
 	}
@@ -1368,13 +1372,13 @@ static void start_rx_sequencer(struct uart_port *uport)
 		msm_geni_serial_stop_rx(uport);
 	}
 
-	/* Start RX with the RFR_OPEN to keep RFR in always ready state */
-	msm_geni_serial_enable_interrupts(uport);
-	geni_setup_s_cmd(uport->membase, UART_START_READ, geni_se_param);
-
 	if (port->xfer_mode == SE_DMA)
 		geni_se_rx_dma_start(uport->membase, DMA_RX_BUF_SIZE,
 							&port->rx_dma);
+
+	/* Start RX with the RFR_OPEN to keep RFR in always ready state */
+	geni_setup_s_cmd(uport->membase, UART_START_READ, geni_se_param);
+	msm_geni_serial_enable_interrupts(uport);
 
 	/* Ensure that the above writes go through */
 	mb();
@@ -1453,6 +1457,13 @@ static int stop_rx_sequencer(struct uart_port *uport)
 
 	if (!uart_console(uport)) {
 		msm_geni_serial_set_manual_flow(false, port);
+		/*
+		 * Wait for the stale timeout to happen if there
+		 * is any data pending in the rx fifo.
+		 * Have a safety factor of 2 to include the interrupt
+		 * and system latencies, add 500usec delay for interrupt
+		 * latency or system delay.
+		 */
 		stale_delay = (STALE_COUNT * SEC_TO_USEC) / port->cur_baud;
 		stale_delay = (2 * stale_delay) + SYSTEM_DELAY;
 		udelay(stale_delay);
@@ -1492,6 +1503,12 @@ static int stop_rx_sequencer(struct uart_port *uport)
 			    __func__, timeout, is_rx_active, geni_status);
 		geni_se_dump_dbg_regs(&port->serial_rsc,
 				uport->membase, port->ipc_log_misc);
+		/*
+		 * Possible that stop_rx is called from system resume context
+		 * for console usecase. In early resume, irq remains disabled
+		 * in the system. call msm_geni_serial_handle_isr to clear
+		 * the interrupts.
+		 */
 		if (uart_console(uport) && !is_rx_active) {
 			msm_geni_serial_handle_isr(uport, &flags, true);
 			goto exit_rx_seq;
@@ -3254,12 +3271,14 @@ static void msm_geni_serial_allow_rx(struct msm_geni_serial_port *port)
 	uart_manual_rfr = (UART_MANUAL_RFR_EN | UART_RFR_READY);
 	geni_write_reg_nolog(uart_manual_rfr, port->uport.membase,
 						SE_UART_MANUAL_RFR);
+	/* Ensure that the manual flow off writes go through */
 	mb();
 	uart_manual_rfr = geni_read_reg_nolog(port->uport.membase,
 						SE_UART_MANUAL_RFR);
 	IPC_LOG_MSG(port->ipc_log_misc, "%s(): rfr = 0x%x\n",
 					__func__, uart_manual_rfr);
 
+	/* To give control of RFR back to HW */
 	msm_geni_serial_set_manual_flow(true, port);
 }
 
@@ -3292,6 +3311,10 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 
 	disable_irq(port->uport.irq);
 
+	/*
+	 * Above stop_rx disabled the flow so we need to enable it here
+	 * Make sure wake up interrupt is enabled before RFR is made low
+	 */
 	msm_geni_serial_allow_rx(port);
 
 	ret = se_geni_resources_off(&port->serial_rsc);

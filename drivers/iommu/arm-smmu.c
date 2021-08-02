@@ -1178,6 +1178,11 @@ static const struct arm_smmu_flush_ops arm_smmu_s2_tlb_ops_v1 = {
 
 static void arm_smmu_deferred_flush(struct arm_smmu_domain *smmu_domain)
 {
+	/*
+	 * This checks for deferred invalidations, and perform flush all.
+	 * Deferred invalidations helps replace multiple invalidations with
+	 * single flush
+	 */
 	if (smmu_domain->defer_flush) {
 		smmu_domain->flush_ops->tlb.tlb_flush_all(smmu_domain);
 		smmu_domain->defer_flush = false;
@@ -1710,6 +1715,7 @@ static void arm_smmu_write_context_bank(struct arm_smmu_device *smmu, int idx,
 
 		reg |= FIELD_PREP(SCTLR_WACFG, SCTLR_WACFG_WA) |
 		       FIELD_PREP(SCTLR_RACFG, SCTLR_RACFG_RA) |
+		       FIELD_PREP(SCTLR_SHCFG, SCTLR_SHCFG_OSH) |
 		       SCTLR_MTCFG |
 		       FIELD_PREP(SCTLR_MEM_ATTR, SCTLR_MEM_ATTR_OISH_WB_CACHE);
 	} else {

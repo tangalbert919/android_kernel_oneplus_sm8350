@@ -1349,6 +1349,14 @@ struct xt_counters *xt_counters_alloc(unsigned int counters)
 }
 EXPORT_SYMBOL(xt_counters_alloc);
 
+struct xt_table_info
+*xt_table_get_private_protected(const struct xt_table *table)
+{
+	return rcu_dereference_protected(table->private,
+					 mutex_is_locked(&xt[table->af].mutex));
+}
+EXPORT_SYMBOL(xt_table_get_private_protected);
+
 struct xt_table_info *
 xt_table_get_private_protected(const struct xt_table *table)
 {
@@ -1384,6 +1392,7 @@ xt_replace_table(struct xt_table *table,
 	}
 
 	newinfo->initial_entries = private->initial_entries;
+
 	rcu_assign_pointer(table->private, newinfo);
 	synchronize_rcu();
 

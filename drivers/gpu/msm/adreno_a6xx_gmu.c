@@ -1164,6 +1164,13 @@ int a6xx_gmu_wait_for_lowest_idle(struct adreno_device *adreno_dev)
 		reg3, reg4);
 	dev_err(&gmu->pdev->dev, "A6XX_GMU_AO_SPARE_CNTL=%x\n", reg5);
 
+	if (adreno_is_a660(adreno_dev)) {
+		u32 val;
+
+		gmu_core_regread(device, A6XX_GMU_PWR_COL_PREEMPT_KEEPALIVE, &val);
+		dev_err(&gmu->pdev->dev, "PWR_COL_PREEMPT_KEEPALIVE=%x\n", val);
+	}
+
 	/* Access GX registers only when GX is ON */
 	if (is_on(reg1)) {
 		kgsl_regread(device, A6XX_CP_STATUS_1, &reg6);
@@ -1617,15 +1624,17 @@ static void a6xx_gmu_pwrctrl_suspend(struct adreno_device *adreno_dev)
 
 	if (adreno_has_gbif(adreno_dev)) {
 		/* Halt GX traffic */
-		if (a6xx_gmu_gx_is_on(device))
-			a6xx_do_gbif_halt(adreno_dev, A6XX_RBBM_GBIF_HALT,
-				A6XX_RBBM_GBIF_HALT_ACK,
-				A6XX_GBIF_GX_HALT_MASK,
-				"GX");
-
+		if (a6xx_gmu_gx_is_on(device)) {
+			kgsl_regwrite(device, A6XX_RBBM_GBIF_HALT,
+				A6XX_GBIF_GX_HALT_MASK);
+			adreno_wait_for_halt_ack(device,
+					A6XX_RBBM_GBIF_HALT_ACK,
+					A6XX_GBIF_GX_HALT_MASK);
+		}
 		/* Halt CX traffic */
-		a6xx_do_gbif_halt(adreno_dev, A6XX_GBIF_HALT, A6XX_GBIF_HALT_ACK,
-			A6XX_GBIF_ARB_HALT_MASK, "CX");
+		a6xx_halt_gbif(adreno_dev);
+		/* De-assert the halts */
+		kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
 	}
 
 	if (a6xx_gmu_gx_is_on(device))
@@ -2764,9 +2773,6 @@ int a6xx_halt_gbif(struct adreno_device *adreno_dev)
 	ret = adreno_wait_for_halt_ack(device,
 		A6XX_GBIF_HALT_ACK, A6XX_GBIF_ARB_HALT_MASK);
 
-	/* De-assert the halts */
-	kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
-
 	return ret;
 }
 
@@ -2797,8 +2803,11 @@ static int a6xx_gmu_power_off(struct adreno_device *adreno_dev)
 	a6xx_rdpm_mx_freq_update(gmu, 0);
 
 	/* Now that we are done with GMU and GPU, Clear the GBIF */
-	if (!adreno_is_a630(adreno_dev))
+	if (!adreno_is_a630(adreno_dev)) {
 		ret = a6xx_halt_gbif(adreno_dev);
+		/* De-assert the halts */
+		kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
+	}
 
 	a6xx_gmu_irq_disable(adreno_dev);
 
