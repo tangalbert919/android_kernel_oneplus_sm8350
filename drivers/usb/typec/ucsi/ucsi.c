@@ -501,6 +501,10 @@ static void ucsi_partner_change(struct ucsi_connector *con)
 	if (!completion_done(&con->complete))
 		complete(&con->complete);
 
+	/* Only notify USB controller if partner supports USB data */
+	if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) & UCSI_CONSTAT_PARTNER_FLAG_USB))
+		u_role = USB_ROLE_NONE;
+
 	if (usb_compliance_mode) {
 		u_role = USB_ROLE_DEVICE;
 		dev_err(ucsi->dev, "%s: USB3.1 compliance test mode!\n",
@@ -578,6 +582,11 @@ static void ucsi_handle_connector_change(struct work_struct *work)
 			ucsi_register_partner(con);
 		else
 			ucsi_unregister_partner(con);
+
+		/* Only notify USB controller if partner supports USB data */
+		if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) &
+				UCSI_CONSTAT_PARTNER_FLAG_USB))
+			u_role = USB_ROLE_NONE;
 
 		if (usb_compliance_mode) {
 			u_role = USB_ROLE_DEVICE;
@@ -897,6 +906,9 @@ static int ucsi_register_port(struct ucsi *ucsi, int index)
 		ucsi_pwr_opmode_change(con);
 		ucsi_register_partner(con);
 	}
+
+	if (!(UCSI_CONSTAT_PARTNER_FLAGS(con->status.flags) & UCSI_CONSTAT_PARTNER_FLAG_USB))
+		role = USB_ROLE_NONE;
 
 	if (usb_compliance_mode) {
 		role = USB_ROLE_DEVICE;

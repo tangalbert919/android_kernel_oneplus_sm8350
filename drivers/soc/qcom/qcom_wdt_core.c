@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 #include <linux/irqdomain.h>
 #include <linux/delay.h>
@@ -252,16 +252,16 @@ static void boot_log_init(void)
 	void *start;
 	unsigned int size;
 	struct md_region md_entry;
-	unsigned int *log_buf_size;
+	uint32_t log_buf_len;
 
-	log_buf_size = (unsigned int *)kallsyms_lookup_name("log_buf_len");
-	if (!log_buf_size) {
-		dev_err(wdog_data->dev, "log_buf_len symbol not found\n");
+	log_buf_len = log_buf_len_get();
+	if (!log_buf_len) {
+		dev_err(wdog_data->dev, "log_buf_len is zero\n");
 		goto out;
 	}
 
-	if (*log_buf_size >= BOOT_LOG_SIZE)
-		size = *log_buf_size;
+	if (log_buf_len >= BOOT_LOG_SIZE)
+		size = log_buf_len;
 	else
 		size = BOOT_LOG_SIZE;
 
@@ -407,11 +407,11 @@ static struct syscore_ops qcom_wdt_syscore_ops = {
 static void qcom_wdt_reset_on_oops(struct msm_watchdog_data *wdog_dd,
 			int timeout)
 {
+	wdog_dd->ops->reset_wdt(wdog_dd);
 	wdog_dd->ops->set_bark_time((timeout + 10) * 1000,
 					wdog_dd);
 	wdog_dd->ops->set_bite_time((timeout + 10) * 1000,
 					wdog_dd);
-	wdog_dd->ops->reset_wdt(wdog_dd);
 }
 
 static int qcom_wdt_panic_handler(struct notifier_block *this,
@@ -864,14 +864,15 @@ static int qcom_wdt_init(struct msm_watchdog_data *wdog_dd,
 	} else {
 		ret = devm_request_irq(wdog_dd->dev, wdog_dd->bark_irq,
 				qcom_wdt_bark_handler,
-				IRQF_TRIGGER_RISING,
+				IRQF_TRIGGER_RISING | IRQF_NO_SUSPEND,
 				"apps_wdog_bark", wdog_dd);
 		if (ret) {
 			dev_err(wdog_dd->dev, "failed to request bark irq: %d\n", ret);
 			return -EINVAL;
 		}
 	}
-
+	INIT_WORK(&wdog_dd->irq_counts_work, compute_irq_stat);
+	atomic_set(&wdog_dd->irq_counts_running, 0);
 	delay_time = msecs_to_jiffies(wdog_dd->pet_time);
 	wdog_dd->ops->set_bark_time(wdog_dd->bark_time, wdog_dd);
 	wdog_dd->ops->set_bite_time(wdog_dd->bark_time + 3 * 1000, wdog_dd);

@@ -3,7 +3,7 @@
  *
  * This code is based on drivers/scsi/ufs/ufshcd.c
  * Copyright (C) 2011-2013 Samsung India Software Operations
- * Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
  *
  * Authors:
  *	Santosh Yaraganavi <santosh.sy@samsung.com>
@@ -1243,7 +1243,8 @@ static int ufshcd_set_clk_freq(struct ufs_hba *hba, bool scale_up)
 	list_for_each_entry(clki, head, list) {
 		if (!IS_ERR_OR_NULL(clki->clk)) {
 			if (scale_up && clki->max_freq) {
-				if (clki->curr_freq == clki->max_freq)
+				if ((clki->curr_freq == clki->max_freq) ||
+				   (!strcmp(clki->name, "core_clk_ice_hw_ctl")))
 					continue;
 
 				ret = clk_set_rate(clki->clk, clki->max_freq);
@@ -1261,7 +1262,8 @@ static int ufshcd_set_clk_freq(struct ufs_hba *hba, bool scale_up)
 				clki->curr_freq = clki->max_freq;
 
 			} else if (!scale_up && clki->min_freq) {
-				if (clki->curr_freq == clki->min_freq)
+				if ((clki->curr_freq == clki->min_freq) ||
+				   (!strcmp(clki->name, "core_clk_ice_hw_ctl")))
 					continue;
 
 				ret = clk_set_rate(clki->clk, clki->min_freq);
@@ -6652,7 +6654,7 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 		intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
 	} while (intr_status && --retries);
 
-	if (retval == IRQ_NONE) {
+	if (enabled_intr_status && retval == IRQ_NONE) {
 		dev_err(hba->dev, "%s: Unhandled interrupt 0x%08x\n",
 					__func__, intr_status);
 		ufshcd_dump_regs(hba, 0, UFSHCI_REG_SPACE_SIZE, "host_regs: ");
@@ -8103,7 +8105,6 @@ static int ufshcd_add_lus(struct ufs_hba *hba)
 	ufsf_device_check(hba);
 	ufsf_init(&hba->ufsf);
 #endif
-	pm_runtime_put_sync(hba->dev);
 
 out:
 	return ret;
@@ -8272,10 +8273,10 @@ out:
 	 * present, turn off the power/clocks etc.
 	 */
 	if (ret) {
-		pm_runtime_put_sync(hba->dev);
 		ufshcd_exit_clk_scaling(hba);
 		ufshcd_hba_exit(hba);
 	}
+	pm_runtime_put_sync(hba->dev);
 }
 
 static enum blk_eh_timer_return ufshcd_eh_timed_out(struct scsi_cmnd *scmd)
@@ -8819,7 +8820,17 @@ static int __ufshcd_setup_clocks(struct ufs_hba *hba, bool on,
 
 	list_for_each_entry(clki, head, list) {
 		if (!IS_ERR_OR_NULL(clki->clk)) {
+#if defined(CONFIG_SCSI_UFSHCD_QTI)
+			/*
+			 * To keep link active, ref_clk and core_clk_unipro
+			 * should be kept ON.
+			 */
+			if (skip_ref_clk &&
+				(!strcmp(clki->name, "ref_clk") ||
+				 !strcmp(clki->name, "core_clk_unipro")))
+#else
 			if (skip_ref_clk && !strcmp(clki->name, "ref_clk"))
+#endif
 				continue;
 
 			clk_state_changed = on ^ clki->enabled;
@@ -8881,7 +8892,8 @@ static int ufshcd_init_clocks(struct ufs_hba *hba)
 		goto out;
 
 	list_for_each_entry(clki, head, list) {
-		if (!clki->name)
+		if ((!clki->name) ||
+		   (!strcmp(clki->name, "core_clk_ice_hw_ctl")))
 			continue;
 
 		clki->clk = devm_clk_get(dev, clki->name);
@@ -9992,8 +10004,9 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	if ((hba->ufs_version != UFSHCI_VERSION_10) &&
 	    (hba->ufs_version != UFSHCI_VERSION_11) &&
 	    (hba->ufs_version != UFSHCI_VERSION_20) &&
-	    (hba->ufs_version != UFSHCI_VERSION_21))
-		dev_err(hba->dev, "invalid UFS version 0x%x\n",
+	    (hba->ufs_version != UFSHCI_VERSION_21) &&
+	    (hba->ufs_version != UFSHCI_VERSION_30))
+		dev_err(hba->dev, "invalid UFS controller version 0x%x\n",
 			hba->ufs_version);
 
 	/* Get Interrupt bit mask per version */

@@ -376,6 +376,9 @@ int mhi_pm_m0_transition(struct mhi_controller *mhi_cntrl)
 		if (mhi_cmd->ring.rp != mhi_cmd->ring.wp)
 			mhi_ring_cmd_db(mhi_cntrl, mhi_cmd);
 		spin_unlock_irq(&mhi_cmd->lock);
+
+		/* ring special doorbells for controllers in legacy mode */
+		mhi_special_dbs_pending(mhi_cntrl);
 	}
 
 	/* ring channel db registers */
@@ -1514,6 +1517,13 @@ int mhi_pm_fast_resume(struct mhi_controller *mhi_cntrl, bool notify_client)
 	}
 
 	if (mhi_cntrl->rddm_supported) {
+
+		/* check EP is in proper state */
+		if (mhi_cntrl->link_status(mhi_cntrl, mhi_cntrl->priv_data)) {
+			MHI_ERR("Unable to access EP Config space\n");
+			return -EIO;
+		}
+
 		if (mhi_get_exec_env(mhi_cntrl) == MHI_EE_RDDM &&
 		    !mhi_cntrl->power_down) {
 			mhi_cntrl->ee = MHI_EE_RDDM;

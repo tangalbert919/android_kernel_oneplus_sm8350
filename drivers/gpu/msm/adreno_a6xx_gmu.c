@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/clk.h>
@@ -16,6 +16,7 @@
 #include <linux/soc/qcom/llcc-qcom.h>
 #include <linux/mailbox/qmp.h>
 #include <soc/qcom/cmd-db.h>
+#include <soc/qcom/boot_stats.h>
 
 #include "adreno.h"
 #include "adreno_a6xx.h"
@@ -1164,6 +1165,13 @@ int a6xx_gmu_wait_for_lowest_idle(struct adreno_device *adreno_dev)
 		reg3, reg4);
 	dev_err(&gmu->pdev->dev, "A6XX_GMU_AO_SPARE_CNTL=%x\n", reg5);
 
+	if (adreno_is_a660(adreno_dev)) {
+		u32 val;
+
+		gmu_core_regread(device, A6XX_GMU_PWR_COL_PREEMPT_KEEPALIVE, &val);
+		dev_err(&gmu->pdev->dev, "PWR_COL_PREEMPT_KEEPALIVE=%x\n", val);
+	}
+
 	/* Access GX registers only when GX is ON */
 	if (is_on(reg1)) {
 		kgsl_regread(device, A6XX_CP_STATUS_1, &reg6);
@@ -1617,15 +1625,17 @@ static void a6xx_gmu_pwrctrl_suspend(struct adreno_device *adreno_dev)
 
 	if (adreno_has_gbif(adreno_dev)) {
 		/* Halt GX traffic */
-		if (a6xx_gmu_gx_is_on(device))
-			a6xx_do_gbif_halt(adreno_dev, A6XX_RBBM_GBIF_HALT,
-				A6XX_RBBM_GBIF_HALT_ACK,
-				A6XX_GBIF_GX_HALT_MASK,
-				"GX");
-
+		if (a6xx_gmu_gx_is_on(device)) {
+			kgsl_regwrite(device, A6XX_RBBM_GBIF_HALT,
+				A6XX_GBIF_GX_HALT_MASK);
+			adreno_wait_for_halt_ack(device,
+					A6XX_RBBM_GBIF_HALT_ACK,
+					A6XX_GBIF_GX_HALT_MASK);
+		}
 		/* Halt CX traffic */
-		a6xx_do_gbif_halt(adreno_dev, A6XX_GBIF_HALT, A6XX_GBIF_HALT_ACK,
-			A6XX_GBIF_ARB_HALT_MASK, "CX");
+		a6xx_halt_gbif(adreno_dev);
+		/* De-assert the halts */
+		kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
 	}
 
 	if (a6xx_gmu_gx_is_on(device))
@@ -1969,7 +1979,7 @@ static bool a6xx_gmu_scales_bandwidth(struct kgsl_device *device)
 {
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 
-	return (ADRENO_GPUREV(adreno_dev) >= ADRENO_REV_A640);
+	return (ADRENO_GPUREV(adreno_dev) >= ADRENO_REV_A635);
 }
 
 static irqreturn_t a6xx_gmu_irq_handler(int irq, void *data)
@@ -2764,9 +2774,6 @@ int a6xx_halt_gbif(struct adreno_device *adreno_dev)
 	ret = adreno_wait_for_halt_ack(device,
 		A6XX_GBIF_HALT_ACK, A6XX_GBIF_ARB_HALT_MASK);
 
-	/* De-assert the halts */
-	kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
-
 	return ret;
 }
 
@@ -2797,8 +2804,11 @@ static int a6xx_gmu_power_off(struct adreno_device *adreno_dev)
 	a6xx_rdpm_mx_freq_update(gmu, 0);
 
 	/* Now that we are done with GMU and GPU, Clear the GBIF */
-	if (!adreno_is_a630(adreno_dev))
+	if (!adreno_is_a630(adreno_dev)) {
 		ret = a6xx_halt_gbif(adreno_dev);
+		/* De-assert the halts */
+		kgsl_regwrite(device, A6XX_GBIF_HALT, 0x0);
+	}
 
 	a6xx_gmu_irq_disable(adreno_dev);
 
@@ -2963,6 +2973,8 @@ static int a6xx_first_boot(struct adreno_device *adreno_dev)
 	if (test_bit(GMU_PRIV_FIRST_BOOT_DONE, &gmu->flags))
 		return a6xx_boot(adreno_dev);
 
+	place_marker("M - DRIVER ADRENO Init");
+
 	ret = adreno_dispatcher_init(adreno_dev);
 	if (ret)
 		return ret;
@@ -3016,6 +3028,7 @@ static int a6xx_first_boot(struct adreno_device *adreno_dev)
 
 	trace_kgsl_pwr_set_state(device, KGSL_STATE_ACTIVE);
 
+	place_marker("M - DRIVER ADRENO Ready");
 
 	return 0;
 }
@@ -3094,6 +3107,8 @@ no_gx_power:
 	del_timer_sync(&device->idle_timer);
 
 	kgsl_pwrscale_sleep(device);
+
+	kgsl_pwrctrl_clear_l3_vote(device);
 
 	trace_kgsl_pwr_set_state(device, KGSL_STATE_SLUMBER);
 

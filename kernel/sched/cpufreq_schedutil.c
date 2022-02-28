@@ -13,6 +13,7 @@
 #include <linux/sched/cpufreq.h>
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
+#include <trace/hooks/sched.h>
 
 #ifdef CONFIG_CONTROL_CENTER
 #include <oneplus/control_center/control_center_helper.h>
@@ -476,7 +477,15 @@ out:
 	freq = map_util_freq(util, freq, max);
 	trace_sugov_next_freq(policy->cpu, util, max, freq);
 #endif
+	unsigned long next_freq = 0;
 
+	trace_android_vh_map_util_freq(util, freq, max, &next_freq);
+	if (next_freq)
+		freq = next_freq;
+	else
+		freq = map_util_freq(util, freq, max);
+
+	trace_sugov_next_freq(policy->cpu, util, max, freq);
 	if (freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
 		return sg_policy->next_freq;
 

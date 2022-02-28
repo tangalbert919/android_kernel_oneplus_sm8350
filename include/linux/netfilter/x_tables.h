@@ -449,6 +449,9 @@ xt_get_per_cpu_counter(struct xt_counters *cnt, unsigned int cpu)
 struct nf_hook_ops *xt_hook_ops_alloc(const struct xt_table *, nf_hookfn *);
 struct xt_table_info *xt_table_get_private_protected(const struct xt_table *table);
 
+struct xt_table_info
+*xt_table_get_private_protected(const struct xt_table *table);
+
 #ifdef CONFIG_COMPAT
 #include <net/compat.h>
 
