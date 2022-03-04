@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2010-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/interconnect.h>
 #include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -42,6 +43,7 @@ static const char * const clocks[] = {
 	"gmu_clk",
 	"ahb_clk",
 	"smmu_vote",
+	"apb_pclk",
 };
 
 static void kgsl_pwrctrl_clk(struct kgsl_device *device, int state,
@@ -298,7 +300,8 @@ static void kgsl_pwrctrl_set_thermal_pwrlevel(struct kgsl_device *device,
 	if (level >= pwr->num_pwrlevels)
 		level = pwr->num_pwrlevels - 1;
 
-	pwr->thermal_pwrlevel = level;
+	pwr->sysfs_thermal_pwrlevel = level;
+	pwr->thermal_pwrlevel = max(pwr->cooling_thermal_pwrlevel, pwr->sysfs_thermal_pwrlevel);
 
 	/* Update the current level using the new limit */
 	kgsl_pwrctrl_pwrlevel_change(device, pwr->active_pwrlevel);
@@ -922,7 +925,7 @@ static ssize_t _max_clock_mhz_show(struct kgsl_device *device, char *buf)
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 
 	return scnprintf(buf, PAGE_SIZE, "%d\n",
-		pwr->pwrlevels[pwr->max_pwrlevel].gpu_freq / 1000000);
+		pwr->pwrlevels[pwr->thermal_pwrlevel].gpu_freq / 1000000);
 }
 
 static ssize_t max_clock_mhz_show(struct device *dev,
@@ -938,7 +941,6 @@ static ssize_t _max_clock_mhz_store(struct kgsl_device *device,
 {
 	u32 freq;
 	int ret, level;
-	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 
 	ret = kstrtou32(buf, 0, &freq);
 	if (ret)
@@ -948,11 +950,12 @@ static ssize_t _max_clock_mhz_store(struct kgsl_device *device,
 	if (level < 0)
 		return level;
 
-	mutex_lock(&device->mutex);
-	pwr->max_pwrlevel = min_t(unsigned int, level, pwr->min_pwrlevel);
-	kgsl_pwrctrl_pwrlevel_change(device, pwr->active_pwrlevel);
-	mutex_unlock(&device->mutex);
-
+	/*
+	 * You would think this would set max_pwrlevel but the legacy behavior
+	 * is that it set thermal_pwrlevel instead so we don't want to mess with
+	 * that.
+	 */
+	kgsl_pwrctrl_set_thermal_pwrlevel(device, level);
 	return count;
 }
 
@@ -1553,6 +1556,8 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 	pwr->max_pwrlevel = 0;
 	pwr->min_pwrlevel = pwr->num_pwrlevels - 1;
 	pwr->thermal_pwrlevel = 0;
+	pwr->sysfs_thermal_pwrlevel = 0;
+	pwr->cooling_thermal_pwrlevel = 0;
 	pwr->thermal_pwrlevel_floor = pwr->min_pwrlevel;
 
 	pwr->wakeup_maxpwrlevel = 0;
@@ -1623,6 +1628,8 @@ void kgsl_pwrctrl_close(struct kgsl_device *device)
 	kgsl_bus_close(device);
 
 	pm_runtime_disable(&device->pdev->dev);
+
+	icc_put(device->l3_icc);
 }
 
 void kgsl_idle_check(struct work_struct *work)
@@ -1758,16 +1765,24 @@ static int kgsl_pwrctrl_enable(struct kgsl_device *device)
 	return device->ftbl->regulator_enable(device);
 }
 
-static void kgsl_pwrctrl_disable(struct kgsl_device *device)
+void kgsl_pwrctrl_clear_l3_vote(struct kgsl_device *device)
 {
 	int status;
 
-	status = clk_set_rate(device->l3_clk, device->l3_freq[0]);
+	if (IS_ERR(device->l3_icc))
+		return;
+
+	status = icc_set_bw(device->l3_icc, 0, device->l3_freq[0]);
 	if (!status)
 		device->cur_l3_pwrlevel = 0;
 	else
 		dev_err(device->dev, "Could not clear l3_vote: %d\n",
 			     status);
+}
+
+static void kgsl_pwrctrl_disable(struct kgsl_device *device)
+{
+	kgsl_pwrctrl_clear_l3_vote(device);
 
 	/* Order pwrrail/clk sequence based upon platform */
 	device->ftbl->regulator_disable(device);
@@ -1866,6 +1881,7 @@ static int _wake(struct kgsl_device *device)
 		/* Turn on the core clocks */
 		kgsl_pwrctrl_clk(device, KGSL_PWRFLAGS_ON, KGSL_STATE_ACTIVE);
 
+		device->ftbl->deassert_gbif_halt(device);
 		/*
 		 * No need to turn on/off irq here as it no longer affects
 		 * power collapse
@@ -1950,12 +1966,11 @@ _nap(struct kgsl_device *device)
 {
 	switch (device->state) {
 	case KGSL_STATE_ACTIVE:
-		if (!device->ftbl->is_hw_collapsible(device)) {
+		if (!device->ftbl->prepare_for_power_off(device)) {
 			kgsl_pwrctrl_request_state(device, KGSL_STATE_NONE);
 			return -EBUSY;
 		}
 
-		device->ftbl->stop_fault_timer(device);
 		kgsl_pwrscale_midframe_timer_cancel(device);
 
 		/*
@@ -2013,7 +2028,7 @@ _slumber(struct kgsl_device *device)
 
 	switch (device->state) {
 	case KGSL_STATE_ACTIVE:
-		if (!device->ftbl->is_hw_collapsible(device)) {
+		if (!device->ftbl->prepare_for_power_off(device)) {
 			kgsl_pwrctrl_request_state(device, KGSL_STATE_NONE);
 			return -EBUSY;
 		}

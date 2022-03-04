@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.*/
+/* Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.*/
 
 #ifndef __MSM_PCIE_H
 #define __MSM_PCIE_H
@@ -49,6 +49,7 @@ struct msm_pcie_notify {
 };
 
 struct msm_pcie_register_event {
+	struct list_head node;
 	u32 events;
 	void *user;
 	enum msm_pcie_trigger mode;
@@ -64,6 +65,24 @@ int msm_msi_init(struct device *dev);
 
 #if IS_ENABLED(CONFIG_PCI_MSM)
 
+int msm_pcie_set_target_link_speed(u32 rc_idx, u32 target_link_speed);
+
+/**
+ * msm_pcie_set_target_link_speed - sets the upper bound of GEN speed PCIe can
+ * link up with
+ * @rc_idx:		root complex port number that endpoint is connected to
+ * @target_link_speed:	new target link speed PCIe can link up with
+ *
+ * Provide PCIe clients the option to control upper bound of GEN speed PCIe
+ * can link up with. Clients may choose only GEN speed within root complex's
+ * controller capability or up to what is defined in devicetree,
+ * qcom,target-link-speed.
+ *
+ * Client may also pass 0 for target_link_speed to have PCIe root complex
+ * reset and use the default TLS.
+ *
+ * Return 0 on success, negative value on error
+ */
 int msm_pcie_set_target_link_speed(u32 rc_idx, u32 target_link_speed);
 
 /**
@@ -235,7 +254,7 @@ static inline int msm_pcie_pm_control(enum msm_pcie_pm_opt pm_opt, u32 busnr,
 }
 
 static inline int msm_pcie_set_target_link_speed(u32 rc_idx,
-			u32 target_link_speed)
+						u32 target_link_speed)
 {
 	return -ENODEV;
 }

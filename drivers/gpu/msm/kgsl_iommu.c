@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2011-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2011-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/bitfield.h>
@@ -15,6 +15,7 @@
 #include <linux/random.h>
 #include <linux/regulator/consumer.h>
 #include <soc/qcom/secure_buffer.h>
+#include <linux/io-64-nonatomic-hi-lo.h>
 
 #include "adreno.h"
 #include "kgsl_device.h"
@@ -538,7 +539,7 @@ static struct kgsl_process_private *kgsl_iommu_get_process(u64 ptbase)
 	struct kgsl_process_private *p;
 	struct kgsl_iommu_pt *iommu_pt;
 
-	spin_lock(&kgsl_driver.proclist_lock);
+	read_lock(&kgsl_driver.proclist_lock);
 
 	list_for_each_entry(p, &kgsl_driver.process_list, list) {
 		iommu_pt = p->pagetable->priv;
@@ -546,12 +547,12 @@ static struct kgsl_process_private *kgsl_iommu_get_process(u64 ptbase)
 			if (!kgsl_process_private_get(p))
 				p = NULL;
 
-			spin_unlock(&kgsl_driver.proclist_lock);
+			read_unlock(&kgsl_driver.proclist_lock);
 			return p;
 		}
 	}
 
-	spin_unlock(&kgsl_driver.proclist_lock);
+	read_unlock(&kgsl_driver.proclist_lock);
 
 	return NULL;
 }
@@ -700,13 +701,17 @@ static int kgsl_iommu_fault_handler(struct iommu_domain *domain,
 		no_page_fault_log = kgsl_mmu_log_fault_addr(mmu, ptbase, addr);
 
 	if (!no_page_fault_log && __ratelimit(&_rs)) {
+		struct kgsl_context *context = kgsl_context_get(device,
+							contextidr);
+
 		dev_crit(ctx->kgsldev->dev,
-			"GPU PAGE FAULT: addr = %lX pid= %d name=%s\n", addr,
-			ptname, comm);
+			"GPU PAGE FAULT: addr = %lX pid= %d name=%s drawctxt=%d context pid = %d\n",
+			addr, ptname, comm, contextidr, context ? context->tid : 0);
 		dev_crit(ctx->kgsldev->dev,
-			"context=%s TTBR0=0x%llx CIDR=0x%x (%s %s fault)\n",
-			ctx->name, ptbase, contextidr,
-			write ? "write" : "read", fault_type);
+			"context=%s TTBR0=0x%llx (%s %s fault)\n",
+			ctx->name, ptbase, write ? "write" : "read", fault_type);
+
+		kgsl_context_put(context);
 
 		if (gpudev->iommu_fault_block) {
 			unsigned int fsynr1;
@@ -953,7 +958,7 @@ static void setup_64bit_pagetable(struct kgsl_mmu *mmu,
 		pt->va_start = KGSL_IOMMU_SECURE_BASE(mmu);
 		pt->va_end = KGSL_IOMMU_SECURE_END(mmu);
 	} else {
-		pt->compat_va_start = KGSL_IOMMU_SVM_BASE32;
+		pt->compat_va_start = KGSL_IOMMU_SVM_BASE32(mmu);
 		pt->compat_va_end = KGSL_IOMMU_SECURE_BASE(mmu);
 		pt->va_start = KGSL_IOMMU_VA_BASE64;
 		pt->va_end = KGSL_IOMMU_VA_END64;
@@ -962,7 +967,7 @@ static void setup_64bit_pagetable(struct kgsl_mmu *mmu,
 	if (pagetable->name != KGSL_MMU_GLOBAL_PT &&
 		pagetable->name != KGSL_MMU_SECURE_PT) {
 		if (kgsl_is_compat_task()) {
-			pt->svm_start = KGSL_IOMMU_SVM_BASE32;
+			pt->svm_start = KGSL_IOMMU_SVM_BASE32(mmu);
 			pt->svm_end = KGSL_IOMMU_SECURE_BASE(mmu);
 		} else {
 			pt->svm_start = KGSL_IOMMU_SVM_BASE64;
@@ -982,13 +987,13 @@ static void setup_32bit_pagetable(struct kgsl_mmu *mmu,
 			pt->va_start = KGSL_IOMMU_SECURE_BASE(mmu);
 			pt->va_end = KGSL_IOMMU_SECURE_END(mmu);
 		} else {
-			pt->va_start = KGSL_IOMMU_SVM_BASE32;
+			pt->va_start = KGSL_IOMMU_SVM_BASE32(mmu);
 			pt->va_end = KGSL_IOMMU_SECURE_BASE(mmu);
 			pt->compat_va_start = pt->va_start;
 			pt->compat_va_end = pt->va_end;
 		}
 	} else {
-		pt->va_start = KGSL_IOMMU_SVM_BASE32;
+		pt->va_start = KGSL_IOMMU_SVM_BASE32(mmu);
 		pt->va_end = KGSL_IOMMU_GLOBAL_MEM_BASE(mmu);
 		pt->compat_va_start = pt->va_start;
 		pt->compat_va_end = pt->va_end;
@@ -996,7 +1001,7 @@ static void setup_32bit_pagetable(struct kgsl_mmu *mmu,
 
 	if (pagetable->name != KGSL_MMU_GLOBAL_PT &&
 		pagetable->name != KGSL_MMU_SECURE_PT) {
-		pt->svm_start = KGSL_IOMMU_SVM_BASE32;
+		pt->svm_start = KGSL_IOMMU_SVM_BASE32(mmu);
 		pt->svm_end = KGSL_IOMMU_SVM_END32;
 	}
 }
@@ -1768,6 +1773,26 @@ static void kgsl_iommu_pagefault_resume(struct kgsl_mmu *mmu)
 	struct kgsl_iommu_context *ctx = &iommu->user_context;
 
 	if (ctx->default_pt != NULL && ctx->stalled_on_fault) {
+		u32 sctlr_val = KGSL_IOMMU_GET_CTX_REG(ctx,
+						KGSL_IOMMU_CTX_SCTLR);
+
+		/*
+		 * As part of recovery, GBIF halt sequence should be performed.
+		 * In a worst case scenario, if any GPU block is generating a
+		 * stream of un-ending faulting transactions, SMMU would enter
+		 * stall-on-fault mode again after resuming and not let GBIF
+		 * halt succeed. In order to avoid that situation and terminate
+		 * those faulty transactions, set CFCFG and HUPCF to 0.
+		 */
+		sctlr_val &= ~(0x1 << KGSL_IOMMU_SCTLR_CFCFG_SHIFT);
+		sctlr_val &= ~(0x1 << KGSL_IOMMU_SCTLR_HUPCF_SHIFT);
+		KGSL_IOMMU_SET_CTX_REG(ctx, KGSL_IOMMU_CTX_SCTLR, sctlr_val);
+		/*
+		 * Make sure the above register write is not reordered across
+		 * the barrier as we use writel_relaxed to write it.
+		 */
+		wmb();
+
 		/*
 		 * This will only clear fault bits in FSR. FSR.SS will still
 		 * be set. Writing to RESUME (below) is the only way to clear
@@ -2228,6 +2253,11 @@ static int kgsl_iommu_get_gpuaddr(struct kgsl_pagetable *pagetable,
 		goto out;
 	}
 
+	/*
+	 * This path is only called in a non-SVM path with locks so we can be
+	 * sure we aren't racing with anybody so we don't need to worry about
+	 * taking the lock
+	 */
 	ret = _insert_gpuaddr(pagetable, addr, size);
 	if (ret == 0) {
 		memdesc->gpuaddr = addr;
