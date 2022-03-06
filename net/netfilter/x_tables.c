@@ -1358,14 +1358,6 @@ struct xt_table_info
 EXPORT_SYMBOL(xt_table_get_private_protected);
 
 struct xt_table_info *
-xt_table_get_private_protected(const struct xt_table *table)
-{
-	return rcu_dereference_protected(table->private,
-		mutex_is_locked(&xt[table->af].mutex));
-}
-EXPORT_SYMBOL(xt_table_get_private_protected);
-
-struct xt_table_info *
 xt_replace_table(struct xt_table *table,
 	      unsigned int num_counters,
 	      struct xt_table_info *newinfo,

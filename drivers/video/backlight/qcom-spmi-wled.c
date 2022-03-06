@@ -1786,12 +1786,13 @@ static int wled_get_max_avail_current(struct led_classdev *led_cdev,
 			return rc;
 		}
 		i_bat_ma = -prop.intval/1000;
-
+#if 0
 		rc = qti_battery_charger_get_prop("battery", BATTERY_RESISTANCE, &r_bat_mohms);
 		if (rc < 0) {
 			pr_err("Failed to get battery resistance, rc=%d\n", rc);
 			return rc;
 		}
+#endif
 		r_bat_mohms /= 1000;
 	} else {
 		rc = wled_iio_get_prop(wled, OCV, &ocv_mv);
