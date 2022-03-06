@@ -4905,20 +4905,18 @@ EXPORT_SYMBOL(set_user_nice_no_cache);
 
 void set_user_nice(struct task_struct *p, long nice)
 {
-	bool queued, running;
+	bool queued, running, allowed = false;
 	int old_prio, delta;
 	struct rq_flags rf;
 	struct rq *rq;
 
+	trace_android_rvh_set_user_nice(p, &nice, &allowed);
+	if ((task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE) && !allowed) {
 #ifdef CONFIG_CONTROL_CENTER
-	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE) {
 		p->cached_prio = p->static_prio;
+#endif
 		return;
 	}
-#else
-	if (task_nice(p) == nice || nice < MIN_NICE || nice > MAX_NICE)
-		return;
-#endif
 
 	/*
 	 * We have to be careful, if called from sys_setpriority(),
@@ -4926,7 +4924,6 @@ void set_user_nice(struct task_struct *p, long nice)
 	 */
 	rq = task_rq_lock(p, &rf);
 	update_rq_clock(rq);
-	trace_android_rvh_set_user_nice(p, &nice);
 
 	/*
 	 * The RT priorities are set via sched_setscheduler(), but we still
