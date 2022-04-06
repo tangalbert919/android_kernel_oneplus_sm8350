@@ -39,10 +39,10 @@ oplus_chg-objs = $(oplus_chg-obj-y)
 
 ccflags-y += -DCONFIG_OPLUS_CHG_GKI_SUPPORT -DOPLUS_CHG_REG_DUMP_ENABLE
 
-ifeq ($(strip $(BRAND_SHOW_FLAG)), oneplus)
+#ifeq ($(strip $(BRAND_SHOW_FLAG)), oneplus)
 	ccflags-y += -DOPLUS_CHG_OP_DEF
-else ifeq ($(strip $(CONFIG_OPLUS_CHG_OOS)), y)
-	ccflags-y += -DOPLUS_CHG_OP_DEF
-endif
+#else ifeq ($(strip $(CONFIG_OPLUS_CHG_OOS)), y)
+#	ccflags-y += -DOPLUS_CHG_OP_DEF
+#endif
 
 obj-$(CONFIG_OPLUS_CHG) = oplus_chg.o
