@@ -254,8 +254,7 @@ int cqhci_crypto_qti_init_crypto(struct cqhci_host *host,
 	if (!cqhci_ice_memres) {
 		pr_debug("%s ICE not supported\n", __func__);
 		host->icemmio = NULL;
-		host->caps &= ~CQHCI_CAP_CRYPTO_SUPPORT;
-		return err;
+		return PTR_ERR(cqhci_ice_memres);
 	}
 
 	host->icemmio = devm_ioremap(&host->pdev->dev,
