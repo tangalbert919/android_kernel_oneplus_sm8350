@@ -14,7 +14,6 @@
 #include <linux/pmic-voter.h>
 #include <linux/ktime.h>
 #include <linux/usb/typec.h>
-#include <linux/alarmtimer.h>
 #include "smb5-lib.h"
 #include "smb5-reg.h"
 #include "schgm-flash.h"
@@ -1356,11 +1355,10 @@ static void smblib_uusb_removal(struct smb_charger *chg)
 	}
 
 	chg->qc3p5_detected = false;
-	chg->qc3p5_detected_mw = 0;
 	smblib_update_usb_type(chg);
 }
 
-void smblib_config_charger_on_debug_battery(struct smb_charger *chg)
+void smblib_suspend_on_debug_battery(struct smb_charger *chg)
 {
 	int rc = 0, val;
 
@@ -1369,8 +1367,6 @@ void smblib_config_charger_on_debug_battery(struct smb_charger *chg)
 		smblib_err(chg, "Couldn't get debug battery prop rc=%d\n", rc);
 		return;
 	}
-
-	vote(chg->bat_temp_irq_disable_votable, DEBUG_BOARD_VOTER, val, 0);
 
 	if (chg->suspend_input_on_debug_batt) {
 		vote(chg->usb_icl_votable, DEBUG_BOARD_VOTER, val, 0);
@@ -1854,27 +1850,6 @@ static int smblib_temp_change_irq_disable_vote_callback(struct votable *votable,
 	}
 
 	chg->irq_info[TEMP_CHANGE_IRQ].enabled = !disable;
-
-	return 0;
-}
-
-static int smblib_bat_temp_irq_disable_vote_callback(struct votable *votable,
-				void *data, int disable, const char *client)
-{
-	struct smb_charger *chg = data;
-
-	if (!chg->irq_info[BAT_TEMP_IRQ].irq)
-		return 0;
-
-	if (chg->irq_info[BAT_TEMP_IRQ].enabled && disable) {
-		disable_irq_wake(chg->irq_info[BAT_TEMP_IRQ].irq);
-		disable_irq_nosync(chg->irq_info[BAT_TEMP_IRQ].irq);
-	} else if (!chg->irq_info[BAT_TEMP_IRQ].enabled && !disable) {
-		enable_irq(chg->irq_info[BAT_TEMP_IRQ].irq);
-		enable_irq_wake(chg->irq_info[BAT_TEMP_IRQ].irq);
-	}
-
-	chg->irq_info[BAT_TEMP_IRQ].enabled = !disable;
 
 	return 0;
 }
@@ -3917,20 +3892,18 @@ int smblib_get_prop_typec_power_role(struct smb_charger *chg, int *val)
 		return 0;
 	}
 
-	spin_lock(&chg->typec_pr_lock);
-
 	rc = smblib_read(chg, TYPE_C_MODE_CFG_REG, &ctrl);
 	if (rc < 0) {
 		smblib_err(chg, "Couldn't read TYPE_C_MODE_CFG_REG rc=%d\n",
 			rc);
-		goto unlock;
+		return rc;
 	}
 	smblib_dbg(chg, PR_REGISTER, "TYPE_C_MODE_CFG_REG = 0x%02x\n",
 		   ctrl);
 
 	if (ctrl & TYPEC_DISABLE_CMD_BIT) {
 		*val = QTI_POWER_SUPPLY_TYPEC_PR_NONE;
-		goto unlock;
+		return rc;
 	}
 
 	switch (ctrl & (EN_SRC_ONLY_BIT | EN_SNK_ONLY_BIT)) {
@@ -3947,14 +3920,10 @@ int smblib_get_prop_typec_power_role(struct smb_charger *chg, int *val)
 		*val = QTI_POWER_SUPPLY_TYPEC_PR_NONE;
 		smblib_err(chg, "unsupported power role 0x%02lx\n",
 			ctrl & (EN_SRC_ONLY_BIT | EN_SNK_ONLY_BIT));
-		rc = -EINVAL;
-		goto unlock;
+		return -EINVAL;
 	}
 
 	chg->power_role = *val;
-unlock:
-	spin_unlock(&chg->typec_pr_lock);
-
 	return rc;
 }
 
@@ -4565,8 +4534,6 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 	if (chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB)
 		return 0;
 
-	spin_lock(&chg->typec_pr_lock);
-
 	smblib_dbg(chg, PR_MISC, "power role change: %d --> %d!",
 			chg->power_role, val);
 
@@ -4574,7 +4541,7 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 	if (chg->power_role == val && chg->power_role != QTI_POWER_SUPPLY_TYPEC_PR_NONE) {
 		smblib_dbg(chg, PR_MISC, "power role already in %d, ignore!",
 				chg->power_role);
-		goto unlock;
+		return 0;
 	}
 
 	typec_mode = smblib_get_prop_typec_mode(chg);
@@ -4600,6 +4567,7 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 	smblib_dbg(chg, PR_MISC, "snk_attached = %d, src_attached = %d, is_pr_lock = %d\n",
 			snk_attached, src_attached, is_pr_lock);
 	cancel_delayed_work(&chg->pr_lock_clear_work);
+	spin_lock(&chg->typec_pr_lock);
 	if (!chg->pr_lock_in_progress && is_pr_lock) {
 		smblib_dbg(chg, PR_MISC, "disable type-c interrupts for power role locking\n");
 		smblib_typec_irq_config(chg, false);
@@ -4611,6 +4579,7 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 	}
 
 	chg->pr_lock_in_progress = is_pr_lock;
+	spin_unlock(&chg->typec_pr_lock);
 
 	switch (val) {
 	case QTI_POWER_SUPPLY_TYPEC_PR_NONE:
@@ -4627,8 +4596,7 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 		break;
 	default:
 		smblib_err(chg, "power role %d not supported\n", val);
-		rc = -EINVAL;
-		goto unlock;
+		return -EINVAL;
 	}
 
 	rc = smblib_masked_write(chg, TYPE_C_MODE_CFG_REG,
@@ -4637,13 +4605,10 @@ int smblib_set_prop_typec_power_role(struct smb_charger *chg, int val)
 	if (rc < 0) {
 		smblib_err(chg, "Couldn't write 0x%02x to TYPE_C_INTRPT_ENB_SOFTWARE_CTRL rc=%d\n",
 			power_role, rc);
-		goto unlock;
+		return rc;
 	}
 
 	chg->power_role = val;
-unlock:
-	spin_unlock(&chg->typec_pr_lock);
-
 	return rc;
 }
 
@@ -5206,9 +5171,7 @@ static void smblib_eval_chg_termination(struct smb_charger *chg, u8 batt_status)
 	 * battery. Trigger the charge termination WA once charging is completed
 	 * to prevent overcharing.
 	 */
-	if ((batt_status == TERMINATE_CHARGE) && (pval.intval == 100) &&
-		(ktime_to_ms(alarm_expires_remaining(/* alarm not pending */
-				&chg->chg_termination_alarm)) <= 0)) {
+	if ((batt_status == TERMINATE_CHARGE) && (pval.intval == 100)) {
 		chg->cc_soc_ref = 0;
 		chg->last_cc_soc = 0;
 		chg->term_vbat_uv = 0;
@@ -6333,7 +6296,6 @@ static void typec_src_removal(struct smb_charger *chg)
 			"Couldn't disable secondary charger rc=%d\n", rc);
 
 	chg->qc3p5_detected = false;
-	chg->qc3p5_detected_mw = 0;
 	typec_src_fault_condition_cfg(chg, false);
 	smblib_hvdcp_detect_try_enable(chg, false);
 	smblib_update_usb_type(chg);
@@ -7417,7 +7379,7 @@ static void bms_update_work(struct work_struct *work)
 		chg->iio_chan_list_qg = qg_list;
 	}
 
-	smblib_config_charger_on_debug_battery(chg);
+	smblib_suspend_on_debug_battery(chg);
 
 	if (chg->batt_psy)
 		power_supply_changed(chg->batt_psy);
@@ -7963,49 +7925,6 @@ out:
 	chg->jeita_configured = JEITA_CFG_FAILURE;
 }
 
-void smblib_moisture_detection_enable(struct smb_charger *chg, int pval)
-{
-	int rc, input_present, val;
-
-	if (chg->pd_disabled)
-		return;
-
-	smblib_is_input_present(chg, &input_present);
-
-	if (pval) {
-		chg->lpd_disabled = false;
-		pr_debug("Moisture detection enabled\n");
-		if (input_present)
-			schedule_delayed_work(&chg->lpd_ra_open_work,
-					msecs_to_jiffies(300));
-		return;
-	}
-
-	chg->lpd_disabled = true;
-
-	if (!is_client_vote_enabled(chg->usb_icl_votable, LPD_VOTER))
-		goto done;
-
-	cancel_delayed_work_sync(&chg->lpd_ra_open_work);
-
-	alarm_cancel(&chg->lpd_recheck_timer);
-
-	vote(chg->usb_icl_votable, LPD_VOTER, false, 0);
-	/* restore DRP mode */
-	val = QTI_POWER_SUPPLY_TYPEC_PR_DUAL;
-	rc = smblib_set_prop_typec_power_role(chg, val);
-	if (rc < 0) {
-		smblib_err(chg, "Failed to set power-role to DRP rc=%d\n",
-						rc);
-		return;
-	}
-
-	chg->lpd_reason = LPD_NONE;
-	chg->lpd_stage = LPD_STAGE_NONE;
-done:
-	pr_debug("Moisture detection disabled\n");
-}
-
 static void smblib_lpd_ra_open_work(struct work_struct *work)
 {
 	struct smb_charger *chg = container_of(work, struct smb_charger,
@@ -8013,7 +7932,7 @@ static void smblib_lpd_ra_open_work(struct work_struct *work)
 	u8 stat;
 	int rc, val;
 
-	if (chg->pr_swap_in_progress || chg->pd_hard_reset || chg->lpd_disabled) {
+	if (chg->pr_swap_in_progress || chg->pd_hard_reset) {
 		chg->lpd_stage = LPD_STAGE_NONE;
 		goto out;
 	}
@@ -8254,15 +8173,6 @@ static int smblib_create_votables(struct smb_charger *chg)
 		return rc;
 	}
 
-	chg->bat_temp_irq_disable_votable = create_votable(
-			"BAT_TEMP_IRQ_DISABLE", VOTE_SET_ANY,
-			smblib_bat_temp_irq_disable_vote_callback, chg);
-	if (IS_ERR(chg->bat_temp_irq_disable_votable)) {
-		rc = PTR_ERR(chg->bat_temp_irq_disable_votable);
-		chg->bat_temp_irq_disable_votable = NULL;
-		return rc;
-	}
-
 	return rc;
 }
 
@@ -8276,8 +8186,6 @@ static void smblib_destroy_votables(struct smb_charger *chg)
 		destroy_votable(chg->awake_votable);
 	if (chg->chg_disable_votable)
 		destroy_votable(chg->chg_disable_votable);
-	if (chg->bat_temp_irq_disable_votable)
-		destroy_votable(chg->bat_temp_irq_disable_votable);
 }
 
 static void smblib_iio_deinit(struct smb_charger *chg)

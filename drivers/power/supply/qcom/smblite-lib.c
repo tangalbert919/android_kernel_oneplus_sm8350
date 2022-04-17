@@ -46,17 +46,10 @@ static void update_sw_icl_max(struct smb_charger *chg,
 				int type);
 static int smblite_lib_get_prop_typec_mode(struct smb_charger *chg);
 
-#define MIN_ADDRESS_RANGE 0x100
 int smblite_lib_read(struct smb_charger *chg, u16 addr, u8 *val)
 {
 	unsigned int value;
 	int rc = 0;
-
-	/* Ignore address range below MIN_ADDRESS_RANGE */
-	if (addr < MIN_ADDRESS_RANGE) {
-		pr_debug("Invalid addr = 0x%x\n", addr);
-		return 0;
-	}
 
 	rc = regmap_read(chg->regmap, addr, &value);
 	if (rc >= 0)
@@ -68,46 +61,22 @@ int smblite_lib_read(struct smb_charger *chg, u16 addr, u8 *val)
 int smblite_lib_batch_read(struct smb_charger *chg, u16 addr, u8 *val,
 			int count)
 {
-	/* Ignore address range below MIN_ADDRESS_RANGE */
-	if (addr < MIN_ADDRESS_RANGE) {
-		pr_debug("Invalid addr = 0x%x\n", addr);
-		return 0;
-	}
-
 	return regmap_bulk_read(chg->regmap, addr, val, count);
 }
 
 int smblite_lib_write(struct smb_charger *chg, u16 addr, u8 val)
 {
-	/* Ignore address range below MIN_ADDRESS_RANGE */
-	if (addr < MIN_ADDRESS_RANGE) {
-		pr_debug("Invalid addr = 0x%x\n", addr);
-		return 0;
-	}
-
 	return regmap_write(chg->regmap, addr, val);
 }
 
 int smblite_lib_batch_write(struct smb_charger *chg, u16 addr, u8 *val,
 			int count)
 {
-	/* Ignore address range below MIN_ADDRESS_RANGE */
-	if (addr < MIN_ADDRESS_RANGE) {
-		pr_debug("Invalid addr = 0x%x\n", addr);
-		return 0;
-	}
-
 	return regmap_bulk_write(chg->regmap, addr, val, count);
 }
 
 int smblite_lib_masked_write(struct smb_charger *chg, u16 addr, u8 mask, u8 val)
 {
-	/* Ignore address range below MIN_ADDRESS_RANGE */
-	if (addr < MIN_ADDRESS_RANGE) {
-		pr_debug("Invalid addr = 0x%x\n", addr);
-		return 0;
-	}
-
 	return regmap_update_bits(chg->regmap, addr, mask, val);
 }
 
@@ -159,7 +128,7 @@ int smblite_lib_icl_override(struct smb_charger *chg,
 		break;
 	}
 
-	rc = smblite_lib_masked_write(chg, USBIN_ICL_OPTIONS_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, USBIN_ICL_OPTIONS_REG,
 				USBIN_MODE_CHG_BIT, usb51_mode);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't set USBIN_ICL_OPTIONS rc=%d\n",
@@ -167,7 +136,7 @@ int smblite_lib_icl_override(struct smb_charger *chg,
 		return rc;
 	}
 
-	rc = smblite_lib_masked_write(chg, CMD_ICL_OVERRIDE_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, CMD_ICL_OVERRIDE_REG,
 				ICL_OVERRIDE_BIT, icl_override);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't override ICL rc=%d\n", rc);
@@ -216,14 +185,14 @@ static void smblite_lib_notify_usb_host(struct smb_charger *chg, bool enable)
 
 	if (enable) {
 		smblite_lib_dbg(chg, PR_OTG, "enabling VBUS in OTG mode\n");
-		rc = smblite_lib_masked_write(chg, DCDC_CMD_OTG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, DCDC_CMD_OTG_REG,
 					OTG_EN_BIT, OTG_EN_BIT);
 		if (rc < 0) {
 			smblite_lib_err(chg,
 				"Couldn't enable VBUS in OTG mode rc=%d\n", rc);
 			return;
 		}
-		rc = smblite_lib_masked_write(chg, DCDC_BST_VREG_SEL(chg->base),
+		rc = smblite_lib_masked_write(chg, DCDC_BST_VREG_SEL,
 					VBOOST_MASK, VBOOST_5P00V);
 		if (rc < 0) {
 			smblite_lib_err(chg,
@@ -233,7 +202,7 @@ static void smblite_lib_notify_usb_host(struct smb_charger *chg, bool enable)
 		smblite_lib_notify_extcon_props(chg, EXTCON_USB_HOST);
 	} else {
 		smblite_lib_dbg(chg, PR_OTG, "disabling VBUS in OTG mode\n");
-		rc = smblite_lib_masked_write(chg, DCDC_CMD_OTG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, DCDC_CMD_OTG_REG,
 					OTG_EN_BIT, 0);
 		if (rc < 0) {
 			smblite_lib_err(chg,
@@ -342,7 +311,7 @@ int smblite_lib_set_usb_suspend(struct smb_charger *chg, bool suspend)
 		vote(chg->icl_irq_disable_votable, USB_SUSPEND_VOTER,
 				true, 0);
 
-	rc = smblite_lib_masked_write(chg, USBIN_INPUT_SUSPEND_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, USBIN_INPUT_SUSPEND_REG,
 				USBIN_SUSPEND_BIT,
 				suspend ? USBIN_SUSPEND_BIT : 0);
 	if (rc < 0)
@@ -378,6 +347,51 @@ static const char * const smblite_lib_qg_ext_iio_chan[] = {
 	[SMB5_QG_TIME_TO_FULL_NOW] = "time_to_full_now",
 };
 
+int smblite_lib_read_iio_prop(struct smb_charger *chg,
+		enum iio_type type, int iio_chan, int *val)
+{
+	struct iio_channel *iio_chan_list;
+	int rc;
+
+	switch (type) {
+	case QG:
+		if (IS_ERR_OR_NULL(chg->iio_chan_list_qg))
+			return -ENODEV;
+		iio_chan_list = chg->iio_chan_list_qg[iio_chan];
+		break;
+	case SMB_PARALLEL:
+		if (IS_ERR_OR_NULL(chg->iio_chan_list_smb_parallel))
+			return -ENODEV;
+		iio_chan_list = chg->iio_chan_list_smb_parallel[iio_chan];
+		break;
+	default:
+		pr_err_ratelimited("iio_type %d is not supported\n", type);
+		return -EINVAL;
+	}
+
+	rc = iio_read_channel_processed(iio_chan_list, val);
+	return rc < 0 ? rc : 0;
+}
+
+int smblite_lib_write_iio_prop(struct smb_charger *chg,
+		enum iio_type type, int iio_chan, int val)
+{
+	struct iio_channel *iio_chan_list;
+
+	switch (type) {
+	case QG:
+		if (IS_ERR_OR_NULL(chg->iio_chan_list_qg))
+			return -ENODEV;
+		iio_chan_list = chg->iio_chan_list_qg[iio_chan];
+		break;
+	default:
+		pr_err_ratelimited("iio_type %d is not supported\n", type);
+		return -EINVAL;
+	}
+
+	return iio_write_channel_raw(iio_chan_list, val);
+}
+
 int smblite_lib_get_prop_from_bms(struct smb_charger *chg, int channel, int *val)
 {
 	int rc;
@@ -391,104 +405,11 @@ int smblite_lib_get_prop_from_bms(struct smb_charger *chg, int channel, int *val
 	return rc < 0 ? rc : 0;
 }
 
-enum chg_type {
-	UNKNOWN,
-	SDP,
-	CDP,
-	DCP,
-	OCP,
-	FLOAT,
-	MAX_TYPES
-};
-
-static const struct apsd_result smblite_apsd_results[] = {
-	[UNKNOWN] = {
-		.name	= "UNKNOWN",
-		.bit	= 0,
-		.val	= POWER_SUPPLY_TYPE_UNKNOWN
-	},
-	[SDP] = {
-		.name	= "SDP",
-		.bit	= SDP_CHARGER_BIT,
-		.val	= POWER_SUPPLY_TYPE_USB
-	},
-	[CDP] = {
-		.name	= "CDP",
-		.bit	= CDP_CHARGER_BIT,
-		.val	= POWER_SUPPLY_TYPE_USB_CDP
-	},
-	[DCP] = {
-		.name	= "DCP",
-		.bit	= DCP_CHARGER_BIT,
-		.val	= POWER_SUPPLY_TYPE_USB_DCP
-	},
-	[OCP] = {
-		.name	= "OCP",
-		.bit	= OCP_CHARGER_BIT,
-		.val	= POWER_SUPPLY_TYPE_USB_DCP
-	},
-	[FLOAT] = {
-		.name	= "FLOAT",
-		.bit	= FLOAT_CHARGER_BIT,
-		.val	= QTI_POWER_SUPPLY_TYPE_USB_FLOAT
-	},
-};
-
-const struct apsd_result *smblite_lib_get_apsd_result(struct smb_charger *chg)
-{
-	int rc, i;
-	u8 apsd_stat;
-	const struct apsd_result *result = &smblite_apsd_results[UNKNOWN];
-
-	rc = smblite_lib_read(chg, APSD_STATUS_REG(chg->base), &apsd_stat);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read APSD_STATUS rc=%d\n", rc);
-		return result;
-	}
-	smblite_lib_dbg(chg, PR_REGISTER, "APSD_STATUS = 0x%02x\n", apsd_stat);
-
-	if (!(apsd_stat & APSD_DTC_STATUS_DONE_BIT))
-		return result;
-
-	rc = smblite_lib_read(chg, APSD_RESULT_STATUS_REG(chg->base), &apsd_stat);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read APSD_RESULT_STATUS rc=%d\n",
-			rc);
-		return result;
-	}
-	apsd_stat &= APSD_RESULT_STATUS_MASK;
-
-	for (i = 0; i < ARRAY_SIZE(smblite_apsd_results); i++) {
-		if (smblite_apsd_results[i].bit == apsd_stat)
-			result = &smblite_apsd_results[i];
-	}
-
-	return result;
-}
-
-static const struct apsd_result *smblite_lib_update_usb_type(struct smb_charger *chg,
+static void smblite_lib_update_usb_type(struct smb_charger *chg,
 					enum power_supply_type type)
 {
-	const struct apsd_result *apsd_result = smblite_lib_get_apsd_result(chg);
-
-	if (apsd_result->val == POWER_SUPPLY_TYPE_UNKNOWN)
-		chg->real_charger_type = type;
-
-	/*
-	 * Update real charger type only if its not FLOAT
-	 * detected as SDP
-	 */
-	if (apsd_result->val != POWER_SUPPLY_TYPE_UNKNOWN &&
-		!(apsd_result->val == QTI_POWER_SUPPLY_TYPE_USB_FLOAT &&
-		chg->real_charger_type == POWER_SUPPLY_TYPE_USB))
-		chg->real_charger_type = apsd_result->val;
-
+	chg->real_charger_type = type;
 	smblite_update_usb_desc(chg);
-
-	smblite_lib_dbg(chg, PR_MISC, "APSD=%s, real_charger_type =%d\n",
-			apsd_result->name, chg->real_charger_type);
-
-	return apsd_result;
 }
 
 static int smblite_lib_notifier_call(struct notifier_block *nb,
@@ -521,40 +442,6 @@ static int smblite_lib_register_notifier(struct smb_charger *chg)
 	}
 
 	return 0;
-}
-
-bool is_concurrent_mode_supported(struct smb_charger *chg)
-{
-	return (chg->concurrent_mode_supported && chg->subtype == PM5100);
-}
-
-static int smblite_lib_concurrent_mode_config(struct smb_charger *chg, bool enable)
-{
-	int rc;
-
-	if (!is_concurrent_mode_supported(chg))
-		return 0;
-
-	rc = smblite_lib_write(chg, CONCURRENT_MODE_CFG_REG(chg->base),
-			(enable ? CONCURRENT_MODE_EN_BIT : 0));
-	if (rc < 0)
-		smblite_lib_err(chg, "Failed to write CONCURRENT_MODE_CFG_REG rc=%d\n",
-				rc);
-
-	if (!enable) {
-		/* Remove usb_icl_vote when concurrency mode is disabled */
-		rc = vote(chg->usb_icl_votable, CONCURRENT_MODE_VOTER, false,
-				0);
-		if (rc < 0)
-			smblite_lib_err(chg, "Failed to vote on ICL rc=%d\n", rc);
-
-		/* Remove chg_disable_vote when concurrency mode is disabled */
-		rc = vote(chg->chg_disable_votable, CONCURRENT_MODE_VOTER, false, 0);
-		if (rc < 0)
-			smblite_lib_err(chg, "Failed to vote on ICL rc=%d\n", rc);
-	}
-
-	return rc;
 }
 
 static void smblite_lib_uusb_removal(struct smb_charger *chg)
@@ -594,11 +481,6 @@ static void smblite_lib_uusb_removal(struct smb_charger *chg)
 	if (rc < 0)
 		smblite_lib_err(chg, "Couldn't un-vote for USB ICL rc=%d\n",
 					rc);
-
-	chg->uusb_apsd_rerun_done = false;
-	chg->hvdcp3_detected = false;
-	/* Disable concurrent mode on USB removal. */
-	smblite_lib_concurrent_mode_config(chg, false);
 }
 
 void smblite_lib_suspend_on_debug_battery(struct smb_charger *chg)
@@ -641,7 +523,6 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 		icl_options = 0;
 		break;
 	case USBIN_500UA:
-		/* USB 2.0 500mA*/
 		icl_options = USB51_MODE_BIT;
 		break;
 	default:
@@ -659,8 +540,7 @@ static int set_sdp_current(struct smb_charger *chg, int icl_ua)
 	}
 
 	rc = smblite_lib_masked_write(chg,
-			USBIN_ICL_OPTIONS_REG(chg->base),
-			CFG_USB3P0_SEL_BIT | USB51_MODE_BIT, icl_options);
+			USBIN_ICL_OPTIONS_REG, USB51_MODE_BIT, icl_options);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't set ICL options rc=%d\n", rc);
 		return rc;
@@ -765,40 +645,6 @@ int smblite_lib_get_icl_current(struct smb_charger *chg, int *icl_ua)
 	return rc;
 }
 
-#define FCC_STEP_1_SIZE_UA 25000
-#define FCC_STEP_2_SIZE_UA 150000
-#define FCC_STEP_1_MAX_DATA 60
-#define STEP_1_MAX_FCC_UA 1500000
-
-/*
- * Fast Charge Current = [DATA]x25mA, DATA = 0..60 (0-1500ma)
- * or [DATA-49]x150mA, DATA = 61..63 (1650mA-1.95A)
- */
-int smblite_lib_get_fcc(struct smb_chg_param *param, u8 val_raw)
-{
-	if (val_raw > FCC_STEP_1_MAX_DATA)
-		return (((val_raw - FCC_STEP_1_MAX_DATA) * FCC_STEP_2_SIZE_UA)
-			+ STEP_1_MAX_FCC_UA);
-
-	return (val_raw * FCC_STEP_1_SIZE_UA);
-}
-
-int smblite_lib_set_fcc(struct smb_chg_param *param, int val_u, u8 *val_raw)
-{
-	if (val_u > param->max_u)
-		val_u = param->max_u;
-	else if (val_u < param->min_u)
-		val_u = param->min_u;
-
-	if (val_u > (FCC_STEP_1_MAX_DATA * FCC_STEP_1_SIZE_UA))
-		*val_raw = (((val_u - STEP_1_MAX_FCC_UA) / FCC_STEP_2_SIZE_UA)
-				+ FCC_STEP_1_MAX_DATA);
-	else
-		*val_raw = (val_u / FCC_STEP_1_SIZE_UA);
-
-	return 0;
-}
-
 /*********************
  * VOTABLE CALLBACKS *
  *********************/
@@ -821,7 +667,7 @@ static int smblite_lib_chg_disable_vote_callback(struct votable *votable,
 	struct smb_charger *chg = data;
 	int rc;
 
-	rc = smblite_lib_masked_write(chg, CHARGING_ENABLE_CMD_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, CHARGING_ENABLE_CMD_REG,
 				 CHARGING_ENABLE_CMD_BIT,
 				 chg_disable ? 0 : CHARGING_ENABLE_CMD_BIT);
 	if (rc < 0) {
@@ -896,7 +742,7 @@ int smblite_lib_get_prop_batt_present(struct smb_charger *chg,
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, chg->base.batif_base + INT_RT_STS_OFFSET, &stat);
+	rc = smblite_lib_read(chg, BATIF_BASE + INT_RT_STS_OFFSET, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATIF_INT_RT_STS rc=%d\n",
 					rc);
@@ -931,7 +777,7 @@ static bool is_charging_paused(struct smb_charger *chg)
 	int rc;
 	u8 val;
 
-	rc = smblite_lib_read(chg, CHARGING_ENABLE_CMD_REG(chg->base), &val);
+	rc = smblite_lib_read(chg, CHARGING_ENABLE_CMD_REG, &val);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read CHARGING_PAUSE_CMD rc=%d\n",
 					rc);
@@ -993,7 +839,7 @@ int smblite_lib_get_prop_batt_status(struct smb_charger *chg,
 	}
 	usb_online = (bool)pval.intval;
 
-	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_1 rc=%d\n",
 			rc);
@@ -1057,7 +903,7 @@ int smblite_lib_get_prop_batt_charge_type(struct smb_charger *chg,
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_1 rc=%d\n",
 			rc);
@@ -1090,7 +936,7 @@ int smblite_lib_get_prop_batt_health(struct smb_charger *chg,
 	int effective_fv_uv;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, CHARGER_VBAT_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, CHARGER_VBAT_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read CHARGER_VBAT_STATUS_REG rc=%d\n",
 			rc);
@@ -1117,7 +963,7 @@ int smblite_lib_get_prop_batt_health(struct smb_charger *chg,
 		}
 	}
 
-	rc = smblite_lib_read(chg, BATTERY_TEMP_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, BATTERY_TEMP_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_2 rc=%d\n",
 			rc);
@@ -1163,7 +1009,7 @@ int smblite_lib_get_prop_input_current_limited(struct smb_charger *chg,
 		return 0;
 	}
 
-	rc = smblite_lib_read(chg, AICL_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, AICL_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read AICL_STATUS rc=%d\n", rc);
 		return rc;
@@ -1184,7 +1030,7 @@ int smblite_lib_get_prop_batt_iterm(struct smb_charger *chg,
 	 * and validate, hence read only the threshold corresponding to ADC
 	 * source. Proceed only if CHGR_ITERM_USE_ANALOG_BIT is 0.
 	 */
-	rc = smblite_lib_read(chg, CHGR_TERM_CFG_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, CHGR_TERM_CFG_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read CHGR_TERM_CFG_REG rc=%d\n",
 				rc);
@@ -1196,7 +1042,7 @@ int smblite_lib_get_prop_batt_iterm(struct smb_charger *chg,
 		return 0;
 	}
 
-	rc = smblite_lib_batch_read(chg, CHGR_ADC_ITERM_UP_THD_MSB_REG(chg->base), buf, 2);
+	rc = smblite_lib_batch_read(chg, CHGR_ADC_ITERM_UP_THD_MSB_REG, buf, 2);
 
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read CHGR_ADC_ITERM_UP_THD_MSB_REG rc=%d\n",
@@ -1221,7 +1067,7 @@ int smblite_lib_get_prop_batt_charge_done(struct smb_charger *chg,
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_1 rc=%d\n",
 			rc);
@@ -1321,84 +1167,13 @@ int smblite_lib_set_prop_system_temp_level(struct smb_charger *chg,
 	return 0;
 }
 
-static int smblite_lib_dp_pulse(struct smb_charger *chg)
-{
-	int rc;
-
-	/* QC 3.0 increment */
-	rc = smblite_lib_masked_write(chg, CMD_HVDCP_REG(chg->base), SINGLE_INCREMENT_BIT,
-			SINGLE_INCREMENT_BIT);
-	if (rc < 0)
-		smblite_lib_err(chg, "Couldn't write to CMD_HVDCP_REG rc=%d\n",
-				rc);
-
-	return rc;
-}
-
-#define HVDCP3_QUALIFICATION_UV (PM5100_MAX_HVDCP3_PULSES * \
-					(HVDCP3_STEP_SIZE_UV / 2))
-static int smblite_lib_hvdcp3_force_max_vbus(struct smb_charger *chg)
-{
-	union power_supply_propval pval = {0, };
-	int cnt = 0, rc, prev_vbus;
-	bool qc3_detected = false;
-
-	rc = smblite_lib_get_prop_usb_voltage_now(chg, &pval);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read voltage_now rc=%d\n",
-		rc);
-		return rc;
-	}
-
-	prev_vbus = pval.intval;
-
-	/*
-	 * Statically increase voltage till 6V.
-	 * ( i.e : 1V / 200mV = 5 pulses ).
-	 */
-	while (cnt++ < PM5100_MAX_HVDCP3_PULSES) {
-		smblite_lib_dp_pulse(chg);
-		/* wait for 100ms for vbus to settle. */
-		msleep(100);
-	}
-
-	rc = smblite_lib_get_prop_usb_voltage_now(chg, &pval);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read voltage_now rc=%d\n",
-			rc);
-		return rc;
-	}
-
-	/* Check if voltage incremented. (i.e if QC3 ) */
-	if (pval.intval >= (prev_vbus + HVDCP3_QUALIFICATION_UV))
-		qc3_detected = true;
-
-	smblite_lib_dbg(chg, PR_MISC, "HVDCP3 : detected=%s, prev_vbus=%d, vbus_now=%d\n",
-			(qc3_detected ? "True" : "False"), prev_vbus,
-			pval.intval);
-
-	return qc3_detected;
-}
-
-static int smblite_lib_force_vbus_voltage(struct smb_charger *chg, u8 val)
-{
-	int rc;
-
-	rc = smblite_lib_masked_write(chg, CMD_HVDCP_REG(chg->base), val, val);
-	if (rc < 0)
-		smblite_lib_err(chg, "Couldn't write to CMD_HVDCP_2_REG rc=%d\n",
-				rc);
-
-	return rc;
-}
-
 int smblite_lib_set_prop_rechg_soc_thresh(struct smb_charger *chg,
 				const int val)
 {
 	int rc;
 	u8 new_thr = DIV_ROUND_CLOSEST(val * 255, 100);
 
-	rc = smblite_lib_write(chg, CHARGE_RCHG_SOC_THRESHOLD_CFG_REG(chg->base),
+	rc = smblite_lib_write(chg, CHARGE_RCHG_SOC_THRESHOLD_CFG_REG,
 			new_thr);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't write to RCHG_SOC_THRESHOLD_CFG_REG rc=%d\n",
@@ -1416,7 +1191,7 @@ int smblite_lib_run_aicl(struct smb_charger *chg, int type)
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read POWER_PATH_STATUS rc=%d\n",
 								rc);
@@ -1430,116 +1205,11 @@ int smblite_lib_run_aicl(struct smb_charger *chg, int type)
 	smblite_lib_dbg(chg, PR_MISC, "re-running AICL\n");
 
 	stat = (type == RERUN_AICL) ? RERUN_AICL_BIT : RESTART_AICL_BIT;
-	rc = smblite_lib_masked_write(chg, AICL_CMD_REG(chg->base), stat, stat);
+	rc = smblite_lib_masked_write(chg, AICL_CMD_REG, stat, stat);
 	if (rc < 0)
 		smblite_lib_err(chg, "Couldn't write to AICL_CMD_REG rc=%d\n",
 				rc);
 	return 0;
-}
-
-#define CONCURRENCY_REDUCED_ICL_UA 300000
-int smblite_lib_set_concurrent_config(struct smb_charger *chg, bool enable)
-{
-	int rc = 0, icl_ua = 0, settled_icl_ua = 0, usb_present = 0;
-	union power_supply_propval pval = {0, };
-
-	if (!is_concurrent_mode_supported(chg)) {
-		smblite_lib_dbg(chg, PR_MISC, "Concurrent Mode supported disabled\n");
-		return 0;
-	}
-
-	/* Exit if there is no change in state */
-	if (chg->concurrent_mode_status == enable)
-		goto out;
-
-	rc = smblite_lib_get_prop_usb_present(chg, &pval);
-	if (rc < 0) {
-		smblite_lib_dbg(chg, PR_MISC,
-			"Couldn't get USB preset status rc=%d\n", rc);
-		goto failure;
-	}
-	usb_present = pval.intval;
-
-	if (enable) {
-		/* Check if USB is connected */
-		if (!usb_present) {
-			smblite_lib_dbg(chg, PR_MISC,
-				"Failed to enable concurrent mode USB disconnected\n", rc);
-			goto failure;
-		}
-
-		/* Get AICL Result */
-		rc = smblite_lib_get_prop_input_current_settled(chg, &settled_icl_ua);
-		if (rc) {
-			smblite_lib_err(chg, "Failed read AICL Result rc=%d\n", rc);
-			goto failure;
-		}
-
-		/* Return if AICL result is less than 300mA. */
-		if (settled_icl_ua <= CONCURRENCY_REDUCED_ICL_UA) {
-			smblite_lib_dbg(chg, PR_MISC,
-				"AICL Result too less to enable concurreny mode\n");
-			goto failure;
-		}
-
-		icl_ua = settled_icl_ua - CONCURRENCY_REDUCED_ICL_UA;
-
-		rc = vote(chg->usb_icl_votable, CONCURRENT_MODE_VOTER, true,
-				icl_ua);
-		if (rc < 0) {
-			smblite_lib_err(chg, "Failed to vote on ICL rc=%d\n", rc);
-			goto failure;
-		}
-
-		if (chg->hvdcp3_detected) {
-			/* Force Vbus to 5V. */
-			rc = smblite_lib_force_vbus_voltage(chg, FORCE_5V_BIT);
-			if (rc < 0)
-				smblite_lib_err(chg, "Failed to force vbus to 5V rc=%d\n",
-					rc);
-		}
-
-		/* Enable charger if already disabled */
-		rc = vote(chg->chg_disable_votable, CONCURRENT_MODE_VOTER, false, 0);
-		if (rc < 0) {
-			smblite_lib_err(chg, "Failed to Enable charger rc=%d\n",
-					rc);
-			goto failure;
-		}
-
-		/* Enable concurrent mode */
-		rc = smblite_lib_concurrent_mode_config(chg, true);
-		if (rc < 0)
-			goto failure;
-
-		chg->concurrent_mode_status = true;
-		smblite_lib_dbg(chg, PR_MISC, "Concurrent Mode enabled successfully: settled_icl_ua=%duA, icl_ua=%duA, is_hvdcp3=%d\n",
-					settled_icl_ua, icl_ua,
-					chg->hvdcp3_detected);
-		goto out;
-	} else {
-		/* Disable concurrent mode */
-		rc = smblite_lib_concurrent_mode_config(chg, false);
-		if (rc < 0)
-			goto failure;
-
-		/* Restore vbus to MAX(6V) if QC3P5 is connected */
-		if (chg->hvdcp3_detected && usb_present)
-			smblite_lib_hvdcp3_force_max_vbus(chg);
-
-		chg->concurrent_mode_status = false;
-		smblite_lib_dbg(chg, PR_MISC, "Concurrent Mode disabled successfully: is_hvdcp3=%d\n",
-			chg->hvdcp3_detected);
-		goto out;
-	}
-
-failure:
-	rc = -EINVAL;
-	smblite_lib_dbg(chg, PR_MISC, "Failed to %s concurrent mode\n",
-			(enable ? "Enable" : "Disable"));
-
-out:
-	return rc;
 }
 
 /*******************
@@ -1552,7 +1222,7 @@ int smblite_lib_get_prop_usb_present(struct smb_charger *chg,
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, chg->base.usbin_base + INT_RT_STS_OFFSET, &stat);
+	rc = smblite_lib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read USBIN_RT_STS rc=%d\n", rc);
 		return rc;
@@ -1573,7 +1243,7 @@ int smblite_lib_get_prop_usb_online(struct smb_charger *chg,
 		return rc;
 	}
 
-	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read POWER_PATH_STATUS rc=%d\n",
 			rc);
@@ -1641,7 +1311,7 @@ int smblite_lib_get_prop_usb_voltage_now(struct smb_charger *chg,
 	 * OTG mode.
 	 */
 	if (!pval.intval) {
-		rc = smblite_lib_read(chg, DCDC_CMD_OTG_REG(chg->base), &reg);
+		rc = smblite_lib_read(chg, DCDC_CMD_OTG_REG, &reg);
 		if (rc < 0) {
 			smblite_lib_err(chg, "Couldn't read CMD_OTG rc=%d", rc);
 			goto out;
@@ -1699,7 +1369,7 @@ int smblite_lib_get_prop_typec_cc_orientation(struct smb_charger *chg,
 	if (chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB)
 		return 0;
 
-	rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_STATUS_4 rc=%d\n",
 					rc);
@@ -1731,7 +1401,7 @@ static int smblite_lib_get_prop_ufp_mode(struct smb_charger *chg)
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, TYPE_C_SNK_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_SNK_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_STATUS_1 rc=%d\n",
 					rc);
@@ -1764,7 +1434,7 @@ static int smblite_lib_get_prop_dfp_mode(struct smb_charger *chg)
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, TYPE_C_SRC_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_SRC_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_SRC_STATUS_REG rc=%d\n",
 				rc);
@@ -1795,7 +1465,7 @@ static int smblite_lib_get_prop_typec_mode(struct smb_charger *chg)
 	if (chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB)
 		return QTI_POWER_SUPPLY_TYPEC_NONE;
 
-	rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_MISC_STATUS_REG rc=%d\n",
 				rc);
@@ -1832,7 +1502,7 @@ int smblite_lib_get_prop_typec_power_role(struct smb_charger *chg,
 		return 0;
 	}
 
-	rc = smblite_lib_read(chg, TYPE_C_MODE_CFG_REG(chg->base), &ctrl);
+	rc = smblite_lib_read(chg, TYPE_C_MODE_CFG_REG, &ctrl);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_MODE_CFG_REG rc=%d\n",
 			rc);
@@ -1877,13 +1547,9 @@ int smblite_lib_get_prop_input_current_settled(struct smb_charger *chg,
 int smblite_lib_get_prop_input_voltage_settled(struct smb_charger *chg,
 						int *val)
 {
-	union power_supply_propval pval = {0, };
-	int rc;
-
-	rc = smblite_lib_get_prop_usb_voltage_now(chg, &pval);
-	*val = pval.intval;
-
-	return rc;
+	/* TODO: do we need to read the real VBUS */
+	*val = 5000000;
+	return 0;
 }
 
 int smblite_lib_get_prop_die_health(struct smb_charger *chg)
@@ -1899,7 +1565,7 @@ int smblite_lib_get_prop_die_health(struct smb_charger *chg)
 	if (input_present == INPUT_NOT_PRESENT)
 		return POWER_SUPPLY_HEALTH_UNKNOWN;
 
-	rc = smblite_lib_read(chg, DIE_TEMP_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, DIE_TEMP_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read DIE_TEMP_STATUS_REG, rc=%d\n",
 				rc);
@@ -2058,7 +1724,7 @@ int smblite_lib_set_prop_typec_power_role(struct smb_charger *chg,
 		return -EINVAL;
 	}
 
-	rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 				TYPEC_POWER_ROLE_CMD_MASK | TYPEC_TRY_MODE_MASK,
 				power_role);
 	if (rc < 0) {
@@ -2079,7 +1745,7 @@ int smblite_lib_set_prop_ship_mode(struct smb_charger *chg,
 
 	smblite_lib_dbg(chg, PR_MISC, "Set ship mode: %d!!\n", !!val);
 
-	rc = smblite_lib_masked_write(chg, SHIP_MODE_REG(chg->base), SHIP_MODE_EN_BIT,
+	rc = smblite_lib_masked_write(chg, SHIP_MODE_REG, SHIP_MODE_EN_BIT,
 			!!val ? SHIP_MODE_EN_BIT : 0);
 	if (rc < 0)
 		dev_err(chg->dev, "Couldn't %s ship mode, rc=%d\n",
@@ -2097,10 +1763,10 @@ static int smblite_lib_update_jeita(struct smb_charger *chg, u32 *thresholds,
 	u16 temp, base_low, base_high;
 
 
-	base_low = (type == JEITA_SOFT) ? CHGR_JEITA_COOL_THRESHOLD_REG(chg->base)
-					: CHGR_JEITA_COLD_THRESHOLD_REG(chg->base);
-	base_high = (type == JEITA_SOFT) ? CHGR_JEITA_WARM_THRESHOLD_REG(chg->base)
-					: CHGR_JEITA_HOT_THRESHOLD_REG(chg->base);
+	base_low = (type == JEITA_SOFT) ? CHGR_JEITA_COOL_THRESHOLD_REG
+					: CHGR_JEITA_COLD_THRESHOLD_REG;
+	base_high = (type == JEITA_SOFT) ? CHGR_JEITA_WARM_THRESHOLD_REG
+					: CHGR_JEITA_HOT_THRESHOLD_REG;
 	temp = thresholds[1] & 0xFFFF;
 	temp = ((temp & 0xFF00) >> 8) | ((temp & 0xFF) << 8);
 	rc = smblite_lib_batch_write(chg, base_high, (u8 *)&temp, 2);
@@ -2131,7 +1797,7 @@ static int smblite_lib_charge_inhibit_en(struct smb_charger *chg, bool enable)
 {
 	int rc;
 
-	rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG,
 					CHGR_INHIBIT_BIT,
 					enable ? CHGR_INHIBIT_BIT : 0);
 	return rc;
@@ -2237,7 +1903,7 @@ int smblite_lib_get_hw_current_max(struct smb_charger *chg,
 	bool non_compliant;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_STATUS_5 rc=%d\n",
 					rc);
@@ -2334,7 +2000,7 @@ irqreturn_t smblite_chg_state_change_irq_handler(int irq, void *data)
 
 	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
 
-	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, BATTERY_CHARGER_STATUS_1_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read BATTERY_CHARGER_STATUS_1 rc=%d\n",
 				rc);
@@ -2486,9 +2152,6 @@ static int smblite_lib_role_switch_failure(struct smb_charger *chg)
 	int rc = 0;
 	union power_supply_propval pval = {0, };
 
-	if (!chg->use_extcon)
-		return 0;
-
 	rc = smblite_lib_get_prop_usb_present(chg, &pval);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't get usb presence status rc=%d\n",
@@ -2583,30 +2246,13 @@ static void smblite_lib_micro_usb_plugin(struct smb_charger *chg,
 					bool vbus_rising)
 {
 	int rc = 0;
-	u8 stat;
+
 	if (vbus_rising) {
+		smblite_lib_notify_device_mode(chg, true);
 		rc = typec_partner_register(chg);
 		if (rc < 0)
 			smblite_lib_err(chg, "Couldn't register partner rc =%d\n",
 					rc);
-
-		/*
-		 * For PM5100 check if concurrent mode support is enabled and
-		 * charging is paused in hardware due to boost being enabled,
-		 * force charging to be disabled in SW.
-		 */
-		if (is_concurrent_mode_supported(chg)) {
-			rc = smblite_lib_read(chg, CHGR_CHG_EN_STATUS_REG(chg->base), &stat);
-			if (rc < 0)
-				smblite_lib_err(chg, "Couldn't read CHGR_EN_STATUS_REG rc=%d\n",
-					rc);
-
-			vote(chg->chg_disable_votable, CONCURRENT_MODE_VOTER,
-				(stat & CHARGING_DISABLED_FROM_BOOST_BIT), 0);
-
-			smblite_lib_dbg(chg, PR_MISC,
-				"charger_en_status=%x, Charging disable by boost\n", stat);
-		}
 	} else {
 		smblite_lib_notify_device_mode(chg, false);
 		smblite_lib_uusb_removal(chg);
@@ -2623,7 +2269,7 @@ static void smblite_lib_usb_plugin_locked(struct smb_charger *chg)
 	struct smb_irq_data *data;
 	struct storm_watch *wdata;
 
-	rc = smblite_lib_read(chg, chg->base.usbin_base + INT_RT_STS_OFFSET, &stat);
+	rc = smblite_lib_read(chg, USBIN_BASE + INT_RT_STS_OFFSET, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read USB_INT_RT_STS rc=%d\n",
 					rc);
@@ -2753,15 +2399,7 @@ static void update_sw_icl_max(struct smb_charger *chg,
 		break;
 	case POWER_SUPPLY_TYPE_USB_DCP:
 		rp_ua = get_rp_based_dcp_current(chg, typec_mode);
-	vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true, rp_ua);
-		break;
-	case QTI_POWER_SUPPLY_TYPE_USB_FLOAT:
-		/*
-		 * limit ICL to 100mA, the USB driver will enumerate to check
-		 * if this is a SDP and appropriately set the current
-		 */
-		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
-						USBIN_100UA);
+		vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true, rp_ua);
 		break;
 	case POWER_SUPPLY_TYPE_UNKNOWN:
 	default:
@@ -2781,212 +2419,6 @@ static void update_sw_icl_max(struct smb_charger *chg,
 	}
 }
 
-/* triggers when HVDCP is detected */
-static void smblite_lib_handle_hvdcp_detect_done(struct smb_charger *chg,
-					    bool rising)
-{
-	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: hvdcp-detect-done %s\n",
-		   rising ? "rising" : "falling");
-}
-
-void smblite_lib_rerun_apsd(struct smb_charger *chg)
-{
-	int rc;
-
-	smblite_lib_dbg(chg, PR_MISC, "re-running APSD\n");
-
-	rc = smblite_lib_masked_write(chg, CMD_APSD_REG(chg->base),
-				APSD_RERUN_BIT, APSD_RERUN_BIT);
-	if (rc < 0)
-		smblite_lib_err(chg, "Couldn't re-run APSD rc=%d\n", rc);
-}
-
-static int smblite_lib_request_dpdm(struct smb_charger *chg, bool enable)
-{
-	int rc = 0;
-
-	/* fetch the DPDM regulator */
-	if (!chg->dpdm_reg && of_get_property(chg->dev->of_node,
-				"dpdm-supply", NULL)) {
-		chg->dpdm_reg = devm_regulator_get(chg->dev, "dpdm");
-		if (IS_ERR(chg->dpdm_reg)) {
-			rc = PTR_ERR(chg->dpdm_reg);
-			smblite_lib_err(chg, "Couldn't get dpdm regulator rc=%d\n",
-					rc);
-			chg->dpdm_reg = NULL;
-			return rc;
-		}
-	}
-
-	mutex_lock(&chg->dpdm_lock);
-	if (enable) {
-		if (chg->dpdm_reg && !chg->dpdm_enabled) {
-			smblite_lib_dbg(chg, PR_MISC, "enabling DPDM regulator\n");
-			rc = regulator_enable(chg->dpdm_reg);
-			if (rc < 0)
-				smblite_lib_err(chg,
-					"Couldn't enable dpdm regulator rc=%d\n",
-					rc);
-			else
-				chg->dpdm_enabled = true;
-		}
-	} else {
-		if (chg->dpdm_reg && chg->dpdm_enabled) {
-			smblite_lib_dbg(chg, PR_MISC, "disabling DPDM regulator\n");
-			rc = regulator_disable(chg->dpdm_reg);
-			if (rc < 0)
-				smblite_lib_err(chg,
-					"Couldn't disable dpdm regulator rc=%d\n",
-					rc);
-			else
-				chg->dpdm_enabled = false;
-		}
-	}
-	mutex_unlock(&chg->dpdm_lock);
-
-	return rc;
-}
-
-static int smblite_lib_rerun_apsd_if_required(struct smb_charger *chg)
-{
-	union power_supply_propval val;
-	int rc;
-
-	rc = smblite_lib_get_prop_usb_present(chg, &val);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't get usb present rc = %d\n", rc);
-		return rc;
-	}
-
-	if (!val.intval)
-		return 0;
-
-	rc = smblite_lib_request_dpdm(chg, true);
-	if (rc < 0)
-		smblite_lib_err(chg, "Couldn't to enable DPDM rc=%d\n", rc);
-
-	chg->uusb_apsd_rerun_done = true;
-	smblite_lib_rerun_apsd(chg);
-
-	return 0;
-}
-
-static void smblite_lib_handle_apsd_done(struct smb_charger *chg, bool rising)
-{
-	const struct apsd_result *apsd_result =
-			smblite_lib_get_apsd_result(chg);
-
-	if (!rising)
-		return;
-
-	apsd_result = smblite_lib_update_usb_type(chg, apsd_result->val);
-
-	switch (apsd_result->bit) {
-	case SDP_CHARGER_BIT:
-	case CDP_CHARGER_BIT:
-	case FLOAT_CHARGER_BIT:
-		if (chg->use_extcon)
-			smblite_lib_notify_device_mode(chg, true);
-		break;
-	case OCP_CHARGER_BIT:
-	case DCP_CHARGER_BIT:
-		break;
-	default:
-		break;
-	}
-
-	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: apsd-done rising; %s detected\n",
-		   apsd_result->name);
-}
-
-static void smblite_lib_handle_hvdcp_check_timeout(struct smb_charger *chg,
-					      bool rising, bool qc_charger)
-{
-	int rc = 0;
-
-	if (rising) {
-		if (qc_charger) {
-			/* Increase vbus to MAX(6V), if incremented HVDCP_3 is detected */
-			rc = smblite_lib_hvdcp3_force_max_vbus(chg);
-			if (rc < 0)
-				smblite_lib_err(chg, "HVDCP3 detection failure\n");
-			if (rc > 0)
-				chg->hvdcp3_detected = true;
-		}
-	}
-
-	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: %s %s\n", __func__,
-		   rising ? "rising" : "falling");
-}
-
-static void smblite_lib_handle_sdp_enumeration_done(struct smb_charger *chg,
-					       bool rising)
-{
-	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: sdp-enumeration-done %s\n",
-		   rising ? "rising" : "falling");
-}
-
-static void smblite_lib_handle_slow_plugin_timeout(struct smb_charger *chg,
-					      bool rising)
-{
-	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: slow-plugin-timeout %s\n",
-		   rising ? "rising" : "falling");
-}
-
-irqreturn_t smblite_usb_source_change_irq_handler(int irq, void *data)
-{
-	struct smb_irq_data *irq_data = data;
-	struct smb_charger *chg = irq_data->parent_data;
-	int rc = 0;
-	u8 stat;
-
-	rc = smblite_lib_read(chg, APSD_STATUS_REG(chg->base), &stat);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read APSD_STATUS rc=%d\n", rc);
-		return IRQ_HANDLED;
-	}
-	smblite_lib_dbg(chg, PR_INTERRUPT, "APSD_STATUS = 0x%02x\n", stat);
-
-	if ((chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB)
-		&& (stat & APSD_DTC_STATUS_DONE_BIT)
-		&& !chg->uusb_apsd_rerun_done) {
-		/*
-		 * Force re-run APSD to handle slow insertion related
-		 * charger-mis-detection.
-		 */
-		chg->uusb_apsd_rerun_done = true;
-		smblite_lib_rerun_apsd_if_required(chg);
-		return IRQ_HANDLED;
-	}
-
-	smblite_lib_handle_apsd_done(chg,
-		(bool)(stat & APSD_DTC_STATUS_DONE_BIT));
-
-	smblite_lib_handle_hvdcp_detect_done(chg,
-		(bool)(stat & QC_CHARGER_BIT));
-
-	smblite_lib_handle_hvdcp_check_timeout(chg,
-		(bool)(stat & HVDCP_CHECK_TIMEOUT_BIT),
-		(bool)(stat & QC_CHARGER_BIT));
-
-	smblite_lib_handle_sdp_enumeration_done(chg,
-		(bool)(stat & ENUMERATION_DONE_BIT));
-
-	smblite_lib_handle_slow_plugin_timeout(chg,
-		(bool)(stat & SLOW_PLUGIN_TIMEOUT_BIT));
-
-	power_supply_changed(chg->usb_psy);
-
-	rc = smblite_lib_read(chg, APSD_STATUS_REG(chg->base), &stat);
-	if (rc < 0) {
-		smblite_lib_err(chg, "Couldn't read APSD_STATUS rc=%d\n", rc);
-		return IRQ_HANDLED;
-	}
-	smblite_lib_dbg(chg, PR_INTERRUPT, "APSD_STATUS = 0x%02x\n", stat);
-
-	return IRQ_HANDLED;
-}
-
 static void typec_sink_insertion(struct smb_charger *chg)
 {
 	smblite_lib_notify_usb_host(chg, true);
@@ -3003,7 +2435,7 @@ static void typec_src_insertion(struct smb_charger *chg)
 		return;
 	}
 
-	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_STATE_MACHINE_STATUS_REG rc=%d\n",
 					rc);
@@ -3030,7 +2462,7 @@ static int smblite_lib_force_dr_mode(struct smb_charger *chg, int mode)
 
 	switch (mode) {
 	case TYPEC_PORT_SNK:
-		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 			TYPEC_POWER_ROLE_CMD_MASK, EN_SNK_ONLY_BIT);
 		if (rc < 0) {
 			smblite_lib_err(chg, "Couldn't enable snk, rc=%d\n",
@@ -3039,7 +2471,7 @@ static int smblite_lib_force_dr_mode(struct smb_charger *chg, int mode)
 		}
 		break;
 	case TYPEC_PORT_SRC:
-		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 			TYPEC_POWER_ROLE_CMD_MASK, EN_SRC_ONLY_BIT);
 		if (rc < 0) {
 			smblite_lib_err(chg, "Couldn't enable src, rc=%d\n",
@@ -3048,7 +2480,7 @@ static int smblite_lib_force_dr_mode(struct smb_charger *chg, int mode)
 		}
 		break;
 	case TYPEC_PORT_DRP:
-		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 			TYPEC_POWER_ROLE_CMD_MASK, 0);
 		if (rc < 0) {
 			smblite_lib_err(chg, "Couldn't enable DRP, rc=%d\n",
@@ -3214,7 +2646,6 @@ static void typec_src_removal(struct smb_charger *chg)
 	smblite_lib_notify_device_mode(chg, false);
 
 	chg->typec_legacy = false;
-	chg->hvdcp3_detected = false;
 }
 
 static void typec_mode_unattached(struct smb_charger *chg)
@@ -3294,7 +2725,7 @@ irqreturn_t smblite_typec_attach_detach_irq_handler(int irq, void *data)
 
 	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
 
-	rc = smblite_lib_read(chg, TYPE_C_STATE_MACHINE_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_STATE_MACHINE_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read TYPE_C_STATE_MACHINE_STATUS_REG rc=%d\n",
 			rc);
@@ -3304,7 +2735,7 @@ irqreturn_t smblite_typec_attach_detach_irq_handler(int irq, void *data)
 	attached = !!(stat & TYPEC_ATTACH_DETACH_STATE_BIT);
 
 	if (attached) {
-		rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG(chg->base), &stat);
+		rc = smblite_lib_read(chg, TYPE_C_MISC_STATUS_REG, &stat);
 		if (rc < 0) {
 			smblite_lib_err(chg, "Couldn't read TYPE_C_MISC_STATUS_REG rc=%d\n",
 				rc);
@@ -3372,7 +2803,7 @@ irqreturn_t smblite_typec_attach_detach_irq_handler(int irq, void *data)
 		}
 	}
 
-	rc = smblite_lib_masked_write(chg, USB_CMD_PULLDOWN_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, USB_CMD_PULLDOWN_REG,
 			EN_PULLDOWN_USB_IN_BIT,
 			attached ?  0 : EN_PULLDOWN_USB_IN_BIT);
 	if (rc < 0)
@@ -3407,7 +2838,7 @@ irqreturn_t smblite_switcher_power_ok_irq_handler(int irq, void *data)
 	if (!(chg->wa_flags & BOOST_BACK_WA))
 		return IRQ_HANDLED;
 
-	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, POWER_PATH_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read POWER_PATH_STATUS rc=%d\n",
 					rc);
@@ -3459,7 +2890,7 @@ irqreturn_t smblite_wdog_bark_irq_handler(int irq, void *data)
 
 	smblite_lib_dbg(chg, PR_INTERRUPT, "IRQ: %s\n", irq_data->name);
 
-	rc = smblite_lib_write(chg, BARK_BITE_WDOG_PET_REG(chg->base),
+	rc = smblite_lib_write(chg, BARK_BITE_WDOG_PET_REG,
 				BARK_BITE_WDOG_PET_BIT);
 	if (rc < 0)
 		smblite_lib_err(chg, "Couldn't pet the dog rc=%d\n", rc);
@@ -3542,7 +2973,7 @@ static void smblite_lib_pr_swap_detach_work(struct work_struct *work)
 	int rc;
 	u8 stat;
 
-	rc = smblite_lib_read(chg, TYPE_C_STATE_MACHINE_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, TYPE_C_STATE_MACHINE_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read STATE_MACHINE_STS rc=%d\n",
 								rc);
@@ -3639,7 +3070,7 @@ static void smblite_lib_thermal_regulation_work(struct work_struct *work)
 		goto exit;
 	}
 
-	rc = smblite_lib_read(chg, DIE_TEMP_STATUS_REG(chg->base), &stat);
+	rc = smblite_lib_read(chg, DIE_TEMP_STATUS_REG, &stat);
 	if (rc < 0) {
 		smblite_lib_err(chg, "Couldn't read DIE_TEMP_STATUS_REG, rc=%d\n",
 				rc);
@@ -3777,7 +3208,7 @@ static void jeita_update_work(struct work_struct *work)
 		}
 	} else {
 		/* Populate the jeita-soft-thresholds */
-		addr = CHGR_JEITA_COOL_THRESHOLD_REG(chg->base);
+		addr = CHGR_JEITA_COOL_THRESHOLD_REG;
 		rc = smblite_lib_batch_read(chg, addr, buff, 2);
 		if (rc < 0) {
 			pr_err("Couldn't to read 0x%4X, rc=%d\n", addr, rc);

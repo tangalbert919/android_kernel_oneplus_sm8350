@@ -25,101 +25,48 @@
 
 static struct power_supply_desc usb_psy_desc;
 
-static const struct smb_base_address smb_base[] = {
-	[PM2250] = {
-		.chg_base   = 0x1000,
-		.dcdc_base  = 0x1100,
-		.batif_base = 0x1200,
-		.usbin_base = 0x1300,
-		.misc_base  = 0x1600,
-		.typec_base = 0x1500,
-	},
-
-	[PM5100] = {
-		.chg_base   = 0x2600,
-		.batif_base = 0x2800,
-		.usbin_base = 0x2900,
-		.misc_base  = 0x2c00,
-		.dcdc_base  = 0x2700,
-	},
-};
-
-static struct smb_params smblite_pm2250_params = {
+static struct smb_params smblite_params = {
 	.fcc			= {
 		.name   = "fast charge current",
+		.reg    = CHGR_FAST_CHARGE_CURRENT_CFG_REG,
 		.min_u  = 0,
 		.max_u  = 2000000,
 		.step_u = 100000,
 	},
 	.fv			= {
 		.name   = "float voltage",
+		.reg    = CHGR_FLOAT_VOLTAGE_CFG_REG,
 		.min_u  = 3600000,
 		.max_u  = 4600000,
 		.step_u = 20000,
 	},
 	.usb_icl		= {
 		.name   = "usb input current limit",
+		.reg    = USBIN_CURRENT_LIMIT_CFG_REG,
 		.min_u  = 0,
 		.max_u  = 2000000,
 		.step_u = 100000,
 	},
 	.icl_max_stat		= {
 		.name   = "dcdc icl max status",
+		.reg    = ICL_MAX_STATUS_REG,
 		.min_u  = 0,
 		.max_u  = 2000000,
 		.step_u = 100000,
 	},
 	.icl_stat		= {
 		.name   = "input current limit status",
+		.reg    = ICL_STATUS_REG,
 		.min_u  = 0,
 		.max_u  = 2000000,
 		.step_u = 100000,
 	},
 	.aicl_5v_threshold		= {
 		.name   = "AICL 5V threshold",
+		.reg    = USBIN_LV_AICL_THRESHOLD_REG,
 		.min_u  = 4200,
 		.max_u  = 4800,
 		.step_u = 200,
-	},
-};
-
-static struct smb_params smblite_pm5100_params = {
-	.fcc			= {
-		.name   = "fast charge current",
-		.min_u  = 0,
-		.max_u  = 1950000,
-		.get_proc = smblite_lib_get_fcc,
-		.set_proc = smblite_lib_set_fcc,
-	},
-	.fv			= {
-		.name   = "float voltage",
-		.min_u  = 3600000,
-		.max_u  = 4790000,
-		.step_u = 10000,
-	},
-	.usb_icl		= {
-		.name   = "usb input current limit",
-		.min_u  = 0,
-		.max_u  = 1950000,
-		.step_u = 100000,
-	},
-	.icl_max_stat		= {
-		.name   = "dcdc icl max status",
-		.min_u  = 0,
-		.max_u  = 1950000,
-		.step_u = 100000,
-	},
-	.icl_stat		= {
-		.name   = "input current limit status",
-		.min_u  = 0,
-		.max_u  = 1950000,
-		.step_u = 100000,
-	},
-	.aicl_5v_threshold		= {
-		.name   = "AICL 5V threshold",
-		.min_u  = 4200,
-		.max_u  = 5100,
-		.step_u = 300,
 	},
 };
 
@@ -183,45 +130,29 @@ ATTRIBUTE_GROUPS(smblite);
 static int smblite_chg_config_init(struct smblite *chip)
 {
 	struct smb_charger *chg = &chip->chg;
+	int subtype = (u8)of_device_get_match_data(chg->dev);
 	u8 val;
 	int rc = 0;
 
-	chg->subtype = (u8)of_device_get_match_data(chg->dev);
-
-	switch (chg->subtype) {
+	switch (subtype) {
 	case PM2250:
 		chg->wa_flags |= WEAK_ADAPTER_WA;
-		chg->base = smb_base[PM2250];
-		chg->param = smblite_pm2250_params;
-		chg->name = "PM2250_charger";
-
-		rc = smblite_lib_read(chg, DCDC_LDO_CFG_REG(chg->base), &val);
-		if (rc < 0) {
-			pr_err("Couldn't read LDO config reg rc=%d\n", rc);
-			return rc;
-		}
-
-		chg->ldo_mode = !!(val & LDO_MODE_BIT);
-
-		break;
-	case PM5100:
-		chg->base = smb_base[PM5100];
-		chg->param = smblite_pm5100_params;
-		chg->name = "PM5100_charger";
 		break;
 	default:
-		pr_err("Unsupported PMIC subtype=%d\n", chg->subtype);
+		pr_err("Unsupported PMIC subtype=%d\n", subtype);
 		return -EINVAL;
 	}
 
-	/* Assign reg to smb params */
-	chg->param.fcc.reg = CHGR_FAST_CHARGE_CURRENT_CFG_REG(chg->base);
-	chg->param.fv.reg = CHGR_FLOAT_VOLTAGE_CFG_REG(chg->base);
-	chg->param.usb_icl.reg = USBIN_CURRENT_LIMIT_CFG_REG(chg->base);
-	chg->param.icl_max_stat.reg = ICL_MAX_STATUS_REG(chg->base);
-	chg->param.icl_stat.reg = ICL_STATUS_REG(chg->base);
-	chg->param.aicl_5v_threshold.reg = USBIN_LV_AICL_THRESHOLD_REG(chg->base);
+	rc = smblite_lib_read(chg, DCDC_LDO_CFG_REG, &val);
+	if (rc < 0) {
+		pr_err("Couldn't read LDO config reg rc=%d\n", rc);
+		return rc;
+	}
+	chg->ldo_mode = !!(val & LDO_MODE_BIT);
+
 	chip->chg.chg_param.smb_version = 0;
+	chg->param = smblite_params;
+	chg->name = "PM2250_charger";
 
 	return rc;
 }
@@ -302,9 +233,6 @@ static int smblite_parse_dt_misc(struct smblite *chip, struct device_node *node)
 					&chg->chg_param.fcc_step_size_ua);
 	if (chg->chg_param.fcc_step_size_ua <= 0)
 		chg->chg_param.fcc_step_size_ua = DEFAULT_FCC_STEP_SIZE_UA;
-
-	chg->concurrent_mode_supported = of_property_read_bool(node,
-					"qcom,concurrency-mode-supported");
 
 	return 0;
 }
@@ -426,6 +354,7 @@ static enum power_supply_property smblite_usb_props[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_ONLINE,
 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_TYPE,
 	POWER_SUPPLY_PROP_SCOPE,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
@@ -458,6 +387,9 @@ static int smblite_usb_get_prop(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		rc = smblite_lib_get_prop_usb_voltage_now(chg, val);
 		break;
+	case POWER_SUPPLY_PROP_TYPE:
+		val->intval = POWER_SUPPLY_TYPE_USB;
+		break;
 	case POWER_SUPPLY_PROP_SCOPE:
 		rc = smblite_lib_get_prop_scope(chg, val);
 		break;
@@ -465,8 +397,7 @@ static int smblite_usb_get_prop(struct power_supply *psy,
 		val->intval = get_effective_result_locked(chg->usb_icl_votable);
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
-		val->intval = (chg->hvdcp3_detected) ?
-					PM5100_HVDCP3_MAX_VOLTAGE_UV : 5000000;
+		val->intval = 5000000;
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		/* USB uses this to set SDP current */
@@ -775,41 +706,6 @@ static int smblite_init_batt_psy(struct smblite *chip)
 	return rc;
 }
 
-/*******************
- * QCOM SMB Class  *
- *******************/
-static ssize_t boost_concurrent_mode_store(struct class *c, struct class_attribute *attr,
-						const char *buf, size_t count)
-{
-	struct smb_charger *chg = container_of(c, struct smb_charger, qcom_class);
-	int rc;
-	bool val;
-
-	if (kstrtobool(buf, &val))
-		return -EINVAL;
-
-	rc = smblite_lib_set_concurrent_config(chg, val);
-	if (rc < 0)
-		return rc;
-
-	return count;
-}
-
-static ssize_t boost_concurrent_mode_show(struct class *c, struct class_attribute *attr,
-						char *buf)
-{
-	struct smb_charger *chg = container_of(c, struct smb_charger, qcom_class);
-
-	return scnprintf(buf, PAGE_SIZE, "%d\n", chg->concurrent_mode_status);
-}
-static CLASS_ATTR_RW(boost_concurrent_mode);
-
-static struct attribute *qcom_class_attrs[] = {
-	&class_attr_boost_concurrent_mode.attr,
-	NULL,
-};
-ATTRIBUTE_GROUPS(qcom_class);
-
 /***************************
  * HARDWARE INITIALIZATION *
  ***************************/
@@ -818,7 +714,7 @@ static int smblite_configure_typec(struct smb_charger *chg)
 	int rc;
 	u8 val = 0;
 
-	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG(chg->base), &val);
+	rc = smblite_lib_read(chg, LEGACY_CABLE_STATUS_REG, &val);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't read Legacy status rc=%d\n", rc);
 		return rc;
@@ -849,21 +745,21 @@ static int smblite_configure_typec(struct smb_charger *chg)
 	}
 
 	/* Use simple write to clear interrupts */
-	rc = smblite_lib_write(chg, TYPE_C_INTERRUPT_EN_CFG_1_REG(chg->base), 0);
+	rc = smblite_lib_write(chg, TYPE_C_INTERRUPT_EN_CFG_1_REG, 0);
 	if (rc < 0) {
 		dev_err(chg->dev,
 			"Couldn't configure Type-C interrupts rc=%d\n", rc);
 		return rc;
 	}
 
-	rc = smblite_lib_write(chg, TYPE_C_INTERRUPT_EN_CFG_2_REG(chg->base), 0);
+	rc = smblite_lib_write(chg, TYPE_C_INTERRUPT_EN_CFG_2_REG, 0);
 	if (rc < 0) {
 		dev_err(chg->dev,
 			"Couldn't configure Type-C interrupts rc=%d\n", rc);
 		return rc;
 	}
 
-	rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 					EN_TRY_SNK_BIT | EN_SNK_ONLY_BIT,
 					EN_TRY_SNK_BIT);
 	if (rc < 0) {
@@ -873,7 +769,7 @@ static int smblite_configure_typec(struct smb_charger *chg)
 		return rc;
 	}
 
-	rc = smblite_lib_masked_write(chg, TYPE_C_EXIT_STATE_CFG_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, TYPE_C_EXIT_STATE_CFG_REG,
 				SEL_SRC_UPPER_REF_BIT, SEL_SRC_UPPER_REF_BIT);
 	if (rc < 0)
 		dev_err(chg->dev,
@@ -914,7 +810,7 @@ static int smblite_configure_iterm_thresholds_adc(struct smblite *chip)
 		buf = (u8 *)&raw_hi_thresh;
 		raw_hi_thresh = buf[1] | (buf[0] << 8);
 
-		rc = smblite_lib_batch_write(chg, CHGR_ADC_ITERM_UP_THD_MSB_REG(chg->base),
+		rc = smblite_lib_batch_write(chg, CHGR_ADC_ITERM_UP_THD_MSB_REG,
 				(u8 *)&raw_hi_thresh, 2);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't configure ITERM threshold HIGH rc=%d\n",
@@ -930,7 +826,7 @@ static int smblite_configure_iterm_thresholds_adc(struct smblite *chip)
 		buf = (u8 *)&raw_lo_thresh;
 		raw_lo_thresh = buf[1] | (buf[0] << 8);
 
-		rc = smblite_lib_batch_write(chg, CHGR_ADC_ITERM_LO_THD_MSB_REG(chg->base),
+		rc = smblite_lib_batch_write(chg, CHGR_ADC_ITERM_LO_THD_MSB_REG,
 				(u8 *)&raw_lo_thresh, 2);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't configure ITERM threshold LOW rc=%d\n",
@@ -963,7 +859,7 @@ static int smblite_configure_recharging(struct smblite *chip)
 	struct smb_charger *chg = &chip->chg;
 
 	/* Configure VBATT-based or automatic recharging */
-	rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG(chg->base), RECHG_MASK,
+	rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG, RECHG_MASK,
 				(chip->dt.auto_recharge_vbat_mv > 0) ?
 				VBAT_BASED_RECHG_BIT : 0);
 	if (rc < 0) {
@@ -978,14 +874,14 @@ static int smblite_configure_recharging(struct smblite *chip)
 
 		temp = ((temp & 0xFF00) >> 8) | ((temp & 0xFF) << 8);
 		rc = smblite_lib_batch_write(chg,
-			CHGR_ADC_RECHARGE_THRESHOLD_MSB_REG(chg->base), (u8 *)&temp, 2);
+			CHGR_ADC_RECHARGE_THRESHOLD_MSB_REG, (u8 *)&temp, 2);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't configure ADC_RECHARGE_THRESHOLD REG rc=%d\n",
 				rc);
 			return rc;
 		}
 		/* Program the sample count for VBAT based recharge to 3 */
-		rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG,
 					NO_OF_SAMPLE_FOR_RCHG, 3);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't configure CHGR_NO_SAMPLE_FOR_TERM_RCHG_CFG rc=%d\n",
@@ -994,7 +890,7 @@ static int smblite_configure_recharging(struct smblite *chip)
 		}
 	}
 
-	rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG(chg->base), RECHG_MASK,
+	rc = smblite_lib_masked_write(chg, CHGR_RECHG_CFG_REG, RECHG_MASK,
 				(chip->dt.auto_recharge_soc != -EINVAL) ?
 				SOC_BASED_RECHG_BIT : VBAT_BASED_RECHG_BIT);
 	if (rc < 0) {
@@ -1022,7 +918,7 @@ static int smblite_init_connector_type(struct smb_charger *chg)
 	int rc, type = 0;
 	u8 val = 0;
 
-	rc = smblite_lib_read(chg, TYPEC_U_USB_CFG_REG(chg->base), &val);
+	rc = smblite_lib_read(chg, TYPEC_U_USB_CFG_REG, &val);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't read U_USB config rc=%d\n",
 				rc);
@@ -1035,8 +931,6 @@ static int smblite_init_connector_type(struct smb_charger *chg)
 
 	if (type) {
 		chg->connector_type = QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB;
-		/* For micro USB connector, use extcon by default */
-		chg->use_extcon = true;
 	} else {
 		chg->connector_type = QTI_POWER_SUPPLY_CONNECTOR_TYPEC;
 		rc = smblite_configure_typec(chg);
@@ -1145,7 +1039,7 @@ static int smblite_init_hw(struct smblite *chip)
 
 	mask = USBIN_AICL_PERIODIC_RERUN_EN_BIT | USBIN_AICL_RERUN_TIME_MASK;
 	val = USBIN_AICL_PERIODIC_RERUN_EN_BIT | AICL_RERUN_TIME_12S_VAL;
-	rc = smblite_lib_masked_write(chg, MISC_AICL_RERUN_CFG_REG(chg->base), mask, val);
+	rc = smblite_lib_masked_write(chg, MISC_AICL_RERUN_CFG_REG, mask, val);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't config AICL rerun rc=%d\n", rc);
 		return rc;
@@ -1153,7 +1047,7 @@ static int smblite_init_hw(struct smblite *chip)
 
 	mask = USBIN_AICL_EN_BIT | USBIN_AICL_START_AT_MAX;
 	val = USBIN_AICL_EN_BIT;
-	rc = smblite_lib_masked_write(chg, USBIN_AICL_OPTIONS_CFG_REG(chg->base), mask,
+	rc = smblite_lib_masked_write(chg, USBIN_AICL_OPTIONS_CFG_REG, mask,
 				val);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't config AICL rc=%d\n", rc);
@@ -1161,7 +1055,7 @@ static int smblite_init_hw(struct smblite *chip)
 	}
 
 	if (!chip->dt.disable_suspend_on_collapse) {
-		rc = smblite_lib_masked_write(chg, USBIN_INPUT_SUSPEND_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, USBIN_INPUT_SUSPEND_REG,
 				SUSPEND_ON_COLLAPSE_USBIN_BIT,
 				SUSPEND_ON_COLLAPSE_USBIN_BIT);
 		if (rc < 0) {
@@ -1178,7 +1072,7 @@ static int smblite_init_hw(struct smblite *chip)
 	}
 
 	/* configure VBUS for software control */
-	rc = smblite_lib_masked_write(chg, DCDC_OTG_CFG_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, DCDC_OTG_CFG_REG,
 				OTG_EN_SRC_CFG_BIT, 0);
 	if (rc < 0) {
 		dev_err(chg->dev,
@@ -1190,7 +1084,7 @@ static int smblite_init_hw(struct smblite *chip)
 						& BARK_WDOG_TIMEOUT_MASK;
 	val |= BITE_WDOG_TIMEOUT_8S << BITE_WDOG_TIMEOUT_SHIFT;
 
-	rc = smblite_lib_masked_write(chg, SNARL_BARK_BITE_WD_CFG_REG(chg->base),
+	rc = smblite_lib_masked_write(chg, SNARL_BARK_BITE_WD_CFG_REG,
 			BARK_WDOG_TIMEOUT_MASK | BITE_WDOG_TIMEOUT_MASK,
 			val);
 	if (rc < 0) {
@@ -1203,7 +1097,7 @@ static int smblite_init_hw(struct smblite *chip)
 		| BITE_WDOG_DISABLE_CHARGING_CFG_BIT | WDOG_TIMER_EN_BIT;
 	val = WDOG_TIMER_EN_ON_PLUGIN_BIT | BARK_WDOG_INT_EN_BIT
 		| BITE_WDOG_DISABLE_CHARGING_CFG_BIT;
-	rc = smblite_lib_masked_write(chg, WD_CFG_REG(chg->base), mask, val);
+	rc = smblite_lib_masked_write(chg, WD_CFG_REG, mask, val);
 	if (rc < 0) {
 		pr_err("Couldn't configue WD config rc=%d\n", rc);
 		return rc;
@@ -1221,13 +1115,13 @@ static int smblite_init_hw(struct smblite *chip)
 		temp = VBAT_TO_VRAW_ADC(chip->dt.chg_inhibit_thr_mv);
 		temp = ((temp & 0xFF00) >> 8) | ((temp & 0xFF) << 8);
 		rc = smblite_lib_batch_write(chg,
-			CHGR_INHIBIT_THRESHOLD_CFG_REG(chg->base), (u8 *)&temp, 2);
+			CHGR_INHIBIT_THRESHOLD_CFG_REG, (u8 *)&temp, 2);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't configure ADC_RECHARGE_THRESHOLD REG rc=%d\n",
 				rc);
 			return rc;
 		}
-		rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG,
 					CHGR_INHIBIT_BIT, CHGR_INHIBIT_BIT);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't enable INHIBIT rc=%d\n",
@@ -1235,7 +1129,7 @@ static int smblite_init_hw(struct smblite *chip)
 			return rc;
 		}
 	} else {
-		rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG(chg->base),
+		rc = smblite_lib_masked_write(chg, CHGR_INHIBIT_REG,
 					CHGR_INHIBIT_BIT, 0);
 		if (rc < 0) {
 			dev_err(chg->dev, "Couldn't enable INHIBIT rc=%d\n",
@@ -1248,7 +1142,7 @@ static int smblite_init_hw(struct smblite *chip)
 	val = FAST_CHARGE_SAFETY_TIMER_EN_BIT
 					| FAST_CHARGE_SAFETY_TIMER_768_MIN;
 	rc = smblite_lib_masked_write(chg,
-			CHGR_FAST_CHARGE_SAFETY_TIMER_CFG_REG(chg->base), mask, val);
+			CHGR_FAST_CHARGE_SAFETY_TIMER_CFG_REG, mask, val);
 	if (rc < 0) {
 		dev_err(chg->dev, "Couldn't set CHGR_FAST_CHARGE_SAFETY_TIMER_CFG_REG rc=%d\n",
 			rc);
@@ -1316,7 +1210,6 @@ static int smblite_determine_initial_status(struct smblite *chip)
 	smblite_batt_temp_changed_irq_handler(0, &irq_data);
 	smblite_wdog_bark_irq_handler(0, &irq_data);
 	smblite_typec_or_rid_detection_change_irq_handler(0, &irq_data);
-	smblite_usb_source_change_irq_handler(0, &irq_data);
 
 	if (chg->usb_id_gpio > 0 &&
 		chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_MICRO_USB)
@@ -1406,11 +1299,6 @@ static struct smb_irq_info smblite_irqs[] = {
 	},
 	[USBIN_GT_VT_IRQ] = {
 		.name		= "usbin-gtvt",
-	},
-	[USBIN_SRC_CHANGE_IRQ] = {
-		.name		= "usbin-src-change",
-		.handler	= smblite_usb_source_change_irq_handler,
-		.wake		= true,
 	},
 	[USBIN_ICL_CHANGE_IRQ] = {
 		.name		= "usbin-icl-change",
@@ -1876,8 +1764,6 @@ static int smblite_probe(struct platform_device *pdev)
 	struct iio_dev *indio_dev;
 	struct smb_charger *chg;
 	int rc = 0;
-	union power_supply_propval pval = {0, };
-	const struct apsd_result *apsd;
 
 	indio_dev = devm_iio_device_alloc(&pdev->dev, sizeof(*chip));
 	if (!indio_dev)
@@ -2003,28 +1889,8 @@ static int smblite_probe(struct platform_device *pdev)
 		goto disable_irq;
 	}
 
-	/* Register QCOM SMB class */
-	if (is_concurrent_mode_supported(chg)) {
-		chg->qcom_class.name = "qcom-smb";
-		chg->qcom_class.owner = THIS_MODULE;
-		chg->qcom_class.class_groups = qcom_class_groups;
-		rc = class_register(&chg->qcom_class);
-		if (rc < 0) {
-			pr_err("Failed to create qcom_class rc=%d\n", rc);
-			goto disable_irq;
-		}
-	}
-
 	device_init_wakeup(chg->dev, true);
 
-	rc = smblite_lib_get_prop_usb_present(chg, &pval);
-	if (rc < 0)
-		pr_err("Couldn't read usb present rc=%d\n", rc);
-
-	apsd = smblite_lib_get_apsd_result(chg);
-
-	pr_info("%s charger probed successfully, charger_present=%d, type=%s\n",
-			chg->name, pval.intval, apsd->name);
 	return rc;
 
 disable_irq:
@@ -2042,7 +1908,6 @@ static int smblite_remove(struct platform_device *pdev)
 	struct smb_charger *chg = &chip->chg;
 
 	smblite_disable_interrupts(chg);
-	class_destroy(&chg->qcom_class);
 	smblite_lib_deinit(chg);
 	sysfs_remove_groups(&chg->dev->kobj, smblite_groups);
 	platform_set_drvdata(pdev, NULL);
@@ -2060,7 +1925,7 @@ static void smblite_shutdown(struct platform_device *pdev)
 
 	/* configure power role for UFP */
 	if (chg->connector_type == QTI_POWER_SUPPLY_CONNECTOR_TYPEC)
-		smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG(chg->base),
+		smblite_lib_masked_write(chg, TYPE_C_MODE_CFG_REG,
 				TYPEC_POWER_ROLE_CMD_MASK, EN_SNK_ONLY_BIT);
 }
 
@@ -2068,10 +1933,6 @@ static const struct of_device_id match_table[] = {
 	{
 		.compatible = "qcom,qpnp-smblite",
 		.data = (void *)PM2250,
-	},
-	{
-		.compatible = "qcom,qpnp-pm5100-smblite",
-		.data = (void *)PM5100,
 	},
 	{ },
 };

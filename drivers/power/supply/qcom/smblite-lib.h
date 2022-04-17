@@ -51,7 +51,6 @@ enum print_reason {
 #define ICL_CHANGE_VOTER		"ICL_CHANGE_VOTER"
 #define TYPEC_SWAP_VOTER		"TYPEC_SWAP_VOTER"
 #define FLASH_ACTIVE_VOTER		"FLASH_ACTIVE_VOTER"
-#define CONCURRENT_MODE_VOTER		"CONCURRENT_MODE_VOTER"
 
 #define BOOST_BACK_STORM_COUNT	3
 #define WEAK_CHG_STORM_COUNT	8
@@ -74,11 +73,6 @@ enum print_reason {
 #define TYPEC_MEDIUM_CURRENT_UA		1500000
 #define TYPEC_HIGH_CURRENT_UA		3000000
 #define ROLE_REVERSAL_DELAY_MS		500
-/* Max supported voltage 6V */
-#define HVDCP3_STEP_SIZE_UV		200000
-#define PM5100_MAX_HVDCP3_PULSES	5
-#define PM5100_HVDCP3_MAX_VOLTAGE_UV	(PM5100_MAX_HVDCP3_PULSES * \
-						HVDCP3_STEP_SIZE_UV)
 
 enum smb_mode {
 	PARALLEL_MASTER = 0,
@@ -134,7 +128,6 @@ enum smb_irq_index {
 	USBIN_UV_IRQ,
 	USBIN_OV_IRQ,
 	USBIN_GT_VT_IRQ,
-	USBIN_SRC_CHANGE_IRQ,
 	USBIN_ICL_CHANGE_IRQ,
 	/* TYPEC */
 	TYPEC_OR_RID_DETECTION_CHANGE_IRQ,
@@ -161,12 +154,6 @@ enum smb_irq_index {
 	FLASH_EN_IRQ,
 	/* END */
 	SMB_IRQ_MAX,
-};
-
-struct apsd_result {
-	const char * const name;
-	const u8 bit;
-	const int val;
 };
 
 enum chg_term_config_src {
@@ -242,16 +229,6 @@ struct smb_iio {
 
 enum pmic_type {
 	PM2250,
-	PM5100,
-};
-
-struct smb_base_address {
-	u16 chg_base;
-	u16 batif_base;
-	u16 usbin_base;
-	u16 misc_base;
-	u16 dcdc_base;
-	u16 typec_base;
 };
 
 struct smb_charger {
@@ -260,20 +237,16 @@ struct smb_charger {
 	struct regmap		*regmap;
 	struct smb_irq_info	*irq_info;
 	struct smb_params	param;
-	struct smb_base_address	base;
 	struct smb_iio		iio;
 	struct iio_channel	*iio_chans;
 	struct iio_channel	**iio_chan_list_qg;
 	struct iio_channel	**iio_chan_list_smb_parallel;
-	struct class            qcom_class;
 	int			*debug_mask;
 	enum smb_mode		mode;
-	u8			subtype;
 	int			weak_chg_icl_ua;
 
 	/* locks */
 	struct mutex		typec_lock;
-	struct mutex		dpdm_lock;
 
 	/* power supplies */
 	struct power_supply		*batt_psy;
@@ -282,9 +255,6 @@ struct smb_charger {
 
 	/* notifiers */
 	struct notifier_block	nb;
-
-	/* Regulators */
-	struct regulator	*dpdm_reg;
 
 	/* parallel charging */
 	struct parallel_params	pl;
@@ -358,12 +328,6 @@ struct smb_charger {
 	int			usb_id_gpio;
 	int			usb_id_irq;
 	bool			typec_role_swap_failed;
-	bool			use_extcon;
-	bool			uusb_apsd_rerun_done;
-	bool			dpdm_enabled;
-	bool			hvdcp3_detected;
-	bool			concurrent_mode_supported;
-	bool			concurrent_mode_status;
 
 	/* workaround flag */
 	u32			wa_flags;
@@ -415,7 +379,6 @@ irqreturn_t smblite_typec_or_rid_detection_change_irq_handler(int irq,
 irqreturn_t smblite_temp_change_irq_handler(int irq, void *data);
 irqreturn_t smblite_usbin_ov_irq_handler(int irq, void *data);
 irqreturn_t smblite_usb_id_irq_handler(int irq, void *data);
-irqreturn_t smblite_usb_source_change_irq_handler(int irq, void *data);
 
 int smblite_lib_get_prop_batt_present(struct smb_charger *chg,
 				union power_supply_propval *val);
@@ -500,15 +463,10 @@ int smblite_lib_icl_override(struct smb_charger *chg,
 				enum icl_override_mode mode);
 int smblite_lib_set_prop_usb_type(struct smb_charger *chg,
 				const int val);
-const struct apsd_result *smblite_lib_get_apsd_result(struct smb_charger *chg);
 void smblite_update_usb_desc(struct smb_charger *chg);
 int smblite_lib_init(struct smb_charger *chg);
 int smblite_lib_deinit(struct smb_charger *chg);
 int smblite_iio_get_prop(struct smb_charger *chg, int channel, int *val);
 int smblite_iio_set_prop(struct smb_charger *chg, int channel, int val);
-int smblite_lib_get_fcc(struct smb_chg_param *param, u8 val_raw);
-int smblite_lib_set_fcc(struct smb_chg_param *param, int val_u, u8 *val_raw);
-int smblite_lib_set_concurrent_config(struct smb_charger *chg, bool enable);
-bool is_concurrent_mode_supported(struct smb_charger *chg);
 
 #endif /* __SMBLITE_LIB_H */

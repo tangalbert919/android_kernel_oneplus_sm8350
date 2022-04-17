@@ -165,7 +165,6 @@
 
 #define FLEXCHARGER_REG				0x10
 #define AFVC_IRQ_BIT				BIT(7)
-#define CHARGER_CONFIG_5_12V_BIT		BIT(6)
 #define CHG_CONFIG_MASK				SMB1351_MASK(6, 4)
 #define LOW_BATT_VOLTAGE_DET_TH_MASK		SMB1351_MASK(3, 0)
 
@@ -196,7 +195,6 @@
 
 #define OTG_MODE_POWER_OPTIONS_REG		0x14
 #define ADAPTER_CONFIG_MASK			SMB1351_MASK(7, 6)
-#define CONTINUOUS_MODE_BIT			BIT(7)
 #define MAP_HVDCP_BIT				BIT(5)
 #define SDP_LOW_BATT_FORCE_USB5_OVER_USB1_BIT	BIT(4)
 #define OTG_HICCUP_MODE_BIT			BIT(2)
@@ -306,7 +304,7 @@
 #define STATUS_RID_C_STATE_MACHINE_BIT		BIT(0)
 
 #define STATUS_7_REG				0x3D
-#define STATUS_HVDCP_MASK			SMB1351_MASK(4, 0)
+#define STATUS_HVDCP_MASK			SMB1351_MASK(7, 0)
 
 #define STATUS_8_REG				0x3E
 #define STATUS_USNIN_HV_INPUT_SEL_BIT		BIT(5)
@@ -363,7 +361,7 @@
 
 #define IRQ_H_REG				0x47
 #define IRQ_IC_LIMIT_STATUS_BIT			BIT(5)
-#define IRQ_HVDCP_3_STATUS_BIT			BIT(4)
+#define IRQ_HVDCP_2P1_STATUS_BIT		BIT(4)
 #define IRQ_HVDCP_AUTH_DONE_BIT			BIT(2)
 #define IRQ_WDOG_TIMEOUT_BIT			BIT(0)
 
@@ -408,6 +406,11 @@ enum reason {
 
 static char *pm_batt_supplied_to[] = {
 	"bms",
+};
+
+struct smb1351_regulator {
+	struct regulator_desc	rdesc;
+	struct regulator_dev	*rdev;
 };
 
 enum chip_version {
@@ -477,6 +480,7 @@ struct smb1351_charger {
 	struct power_supply_desc	batt_psy_d;
 	struct power_supply	*batt_psy;
 
+	struct smb1351_regulator	otg_vreg;
 	struct mutex		irq_complete;
 
 	struct dentry		*debug_root;
@@ -824,6 +828,87 @@ static int smb1351_iterm_set(struct smb1351_charger *chip, int iterm_ma)
 	return 0;
 }
 
+static int smb1351_chg_otg_regulator_enable(struct regulator_dev *rdev)
+{
+	int rc = 0;
+	struct smb1351_charger *chip = rdev_get_drvdata(rdev);
+
+	rc = smb1351_masked_write(chip, CMD_CHG_REG, CMD_OTG_EN_BIT,
+							CMD_OTG_EN_BIT);
+	if (rc)
+		pr_err("Couldn't enable  OTG mode rc=%d\n", rc);
+	return rc;
+}
+
+static int smb1351_chg_otg_regulator_disable(struct regulator_dev *rdev)
+{
+	int rc = 0;
+	struct smb1351_charger *chip = rdev_get_drvdata(rdev);
+
+	rc = smb1351_masked_write(chip, CMD_CHG_REG, CMD_OTG_EN_BIT, 0);
+	if (rc)
+		pr_err("Couldn't disable OTG mode rc=%d\n", rc);
+	return rc;
+}
+
+static int smb1351_chg_otg_regulator_is_enable(struct regulator_dev *rdev)
+{
+	int rc = 0;
+	u8 reg = 0;
+	struct smb1351_charger *chip = rdev_get_drvdata(rdev);
+
+	rc = smb1351_read_reg(chip, CMD_CHG_REG, &reg);
+	if (rc) {
+		pr_err("Couldn't read OTG enable bit rc=%d\n", rc);
+		return rc;
+	}
+
+	return (reg & CMD_OTG_EN_BIT) ? 1 : 0;
+}
+
+static struct regulator_ops smb1351_chg_otg_reg_ops = {
+	.enable		= smb1351_chg_otg_regulator_enable,
+	.disable	= smb1351_chg_otg_regulator_disable,
+	.is_enabled	= smb1351_chg_otg_regulator_is_enable,
+};
+
+static int smb1351_regulator_init(struct smb1351_charger *chip)
+{
+	int rc = 0;
+	struct regulator_config cfg = {};
+	struct regulator_init_data *init_data;
+
+	chip->otg_vreg.rdesc.owner = THIS_MODULE;
+	chip->otg_vreg.rdesc.type = REGULATOR_VOLTAGE;
+	chip->otg_vreg.rdesc.ops = &smb1351_chg_otg_reg_ops;
+	chip->otg_vreg.rdesc.name =
+		chip->dev->of_node->name;
+	chip->otg_vreg.rdesc.of_match =
+		chip->dev->of_node->name;
+
+	init_data = of_get_regulator_init_data(chip->dev, chip->dev->of_node,
+					&chip->otg_vreg.rdesc);
+	if (!init_data) {
+		pr_err("regulator init data is missing\n");
+		return -EINVAL;
+	}
+
+	cfg.dev = chip->dev;
+	cfg.driver_data = chip;
+	cfg.init_data = init_data;
+	cfg.of_node = chip->dev->of_node;
+
+	chip->otg_vreg.rdev = regulator_register(
+					&chip->otg_vreg.rdesc, &cfg);
+	if (IS_ERR(chip->otg_vreg.rdev)) {
+		rc = PTR_ERR(chip->otg_vreg.rdev);
+		chip->otg_vreg.rdev = NULL;
+		if (rc != -EPROBE_DEFER)
+			pr_err("OTG reg failed, rc=%d\n", rc);
+	}
+	return rc;
+}
+
 static int smb_chip_get_version(struct smb1351_charger *chip)
 {
 	u8 ver;
@@ -844,20 +929,6 @@ static int smb_chip_get_version(struct smb1351_charger *chip)
 	}
 
 	return rc;
-}
-
-static int rerun_apsd(struct smb1351_charger *chip)
-{
-	int rc;
-
-	pr_debug("Reruning APSD\nDisabling APSD\n");
-
-	rc = smb1351_masked_write(chip, CMD_HVDCP_REG, CMD_APSD_RE_RUN_BIT,
-						CMD_APSD_RE_RUN_BIT);
-	if (rc)
-		pr_err("Couldn't re-run APSD algo\n");
-
-	return 0;
 }
 
 static int smb1351_hw_init(struct smb1351_charger *chip)
@@ -1061,58 +1132,6 @@ static int smb1351_hw_init(struct smb1351_charger *chip)
 			pr_err("Couldn't configure RID enable rc = %d\n", rc);
 			return rc;
 		}
-	}
-
-	rc = smb1351_masked_write(chip, PON_OPTIONS_REG,
-				QC_2P1_AUTH_ALGO_IRQ_EN_BIT,
-				QC_2P1_AUTH_ALGO_IRQ_EN_BIT);
-	if (rc) {
-		pr_err("Couldn't enable QC2P1 algo auth irq rc = %d\n", rc);
-		return rc;
-	}
-
-	/* enable continuous mode */
-	rc = smb1351_masked_write(chip, OTG_MODE_POWER_OPTIONS_REG,
-				CONTINUOUS_MODE_BIT, CONTINUOUS_MODE_BIT);
-	if (rc) {
-		pr_err("couldn't write to OTG_MODE_POWER_OPTIONS_REG rc= %d\n",
-									rc);
-		return rc;
-	}
-
-	/* set the voltage range to 5V-12V */
-	rc = smb1351_masked_write(chip, FLEXCHARGER_REG,
-					CHG_CONFIG_MASK,
-					CHARGER_CONFIG_5_12V_BIT);
-	if (rc) {
-		pr_err("couldn't write to FLEXCHARGER_REG rc= %d\n", rc);
-		return rc;
-	}
-
-	/* Enable HVDCP-QC2/3 */
-	rc = smb1351_masked_write(chip, HVDCP_BATT_MISSING_CTRL_REG,
-				HVDCP_EN_BIT, HVDCP_EN_BIT);
-	if (rc) {
-		pr_err("Couldn't enable hvdcp  rc = %d\n", rc);
-		return rc;
-	}
-
-	rc = smb1351_read_reg(chip, IRQ_G_REG, &reg);
-	if (rc) {
-		pr_err("Couldn't read IRQ_G_REG rc = %d\n", rc);
-		return rc;
-	}
-
-	/* To detect HVDCP, rerun APSD only if DCP is detected */
-	if (reg & IRQ_SOURCE_DET_BIT) {
-		rc = smb1351_read_reg(chip, STATUS_5_REG, &reg);
-		if (rc) {
-			pr_err("Couldn't read STATUS_5 rc = %d\n", rc);
-			return rc;
-		}
-
-		if (reg & STATUS_PORT_DCP)
-			rerun_apsd(chip);
 	}
 
 	return rc;
@@ -1536,6 +1555,20 @@ static int smb1351_battery_get_property(struct power_supply *psy,
 	return 0;
 }
 
+static int rerun_apsd(struct smb1351_charger *chip)
+{
+	int rc;
+
+	pr_debug("Reruning APSD\nDisabling APSD\n");
+
+	rc = smb1351_masked_write(chip, CMD_HVDCP_REG, CMD_APSD_RE_RUN_BIT,
+						CMD_APSD_RE_RUN_BIT);
+	if (rc)
+		pr_err("Couldn't re-run APSD algo\n");
+
+	return 0;
+}
+
 static void smb1351_hvdcp_det_work(struct work_struct *work)
 {
 	int rc;
@@ -1551,17 +1584,11 @@ static void smb1351_hvdcp_det_work(struct work_struct *work)
 	}
 	pr_debug("STATUS_7_REG = 0x%02X\n", reg);
 
-	if (reg & STATUS_HVDCP_MASK) {
-		rc = smb1351_read_reg(chip, IRQ_H_REG, &reg);
-
-		if (!rc && (reg & IRQ_HVDCP_3_STATUS_BIT))
-			pr_debug("HVDCP_3 is detected\n");
-	}
 end:
 	pm_relax(chip->dev);
 }
 
-#define HVDCP_NOTIFY_MS 3500
+#define HVDCP_NOTIFY_MS 2500
 static int smb1351_apsd_complete_handler(struct smb1351_charger *chip,
 						u8 status)
 {
@@ -1727,11 +1754,7 @@ reschedule:
 
 static int smb1351_usbin_uv_handler(struct smb1351_charger *chip, u8 status)
 {
-	/*
-	 *Status=0 indicates valid input is present,
-	 *request usb to Hi-Z dp-dm
-	 */
-	smb1351_request_dpdm(chip, !status);
+	smb1351_request_dpdm(chip, !!status);
 
 	if (status) {
 		cancel_delayed_work_sync(&chip->hvdcp_det_work);
@@ -2625,10 +2648,16 @@ static int smb1351_main_charger_probe(struct i2c_client *client,
 
 	dump_regs(chip);
 
+	rc = smb1351_regulator_init(chip);
+	if (rc) {
+		pr_err("Couldn't initialize smb1351 ragulator rc=%d\n", rc);
+		goto fail_smb1351_regulator_init;
+	}
+
 	rc = smb1351_hw_init(chip);
 	if (rc) {
 		pr_err("Couldn't initialize hardware rc=%d\n", rc);
-		return rc;
+		goto fail_smb1351_hw_init;
 	}
 
 	rc = smb1351_init_otg(chip);
@@ -2640,7 +2669,7 @@ static int smb1351_main_charger_probe(struct i2c_client *client,
 	rc = smb1351_determine_initial_state(chip);
 	if (rc) {
 		pr_err("Couldn't determine initial state rc=%d\n", rc);
-		return rc;
+		goto fail_smb1351_hw_init;
 	}
 
 	/* STAT irq configuration */
@@ -2652,7 +2681,7 @@ static int smb1351_main_charger_probe(struct i2c_client *client,
 		if (rc) {
 			pr_err("Failed STAT irq=%d request rc = %d\n",
 				client->irq, rc);
-			return rc;
+			goto fail_smb1351_hw_init;
 		}
 		enable_irq_wake(client->irq);
 	}
@@ -2682,6 +2711,11 @@ static int smb1351_main_charger_probe(struct i2c_client *client,
 			smb1351_get_prop_batt_present(chip),
 			smb1351_version_str[chip->version]);
 	return 0;
+
+fail_smb1351_hw_init:
+	regulator_unregister(chip->otg_vreg.rdev);
+fail_smb1351_regulator_init:
+	return rc;
 }
 
 static int smb1351_charger_probe(struct i2c_client *client,
