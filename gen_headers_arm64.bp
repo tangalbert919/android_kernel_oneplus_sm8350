@@ -384,7 +384,6 @@ gen_headers_out_arm64 = [
     "linux/msm_ion_ids.h",
     "linux/msm_ipa.h",
     "linux/msm_kgsl.h",
-    "linux/msm_npu.h",
     "linux/msm_rmnet.h",
     "linux/mtio.h",
     "linux/n_r3964.h",
@@ -640,7 +639,6 @@ gen_headers_out_arm64 = [
     "linux/zorro_ids.h",
     "linux/hab_ioctl.h",
     "linux/habmmid.h",
-    "linux/hgsl.h",
     "media/msm_cvp_private.h",
     "media/radio-iris-commands.h",
     "media/radio-iris.h",
@@ -687,6 +685,9 @@ gen_headers_out_arm64 = [
     "scsi/scsi_bsg_ufs.h",
     "scsi/scsi_netlink.h",
     "scsi/scsi_netlink_fc.h",
+//#ifdef OPLUS_FEATURE_UFSPLUS
+    "scsi/ufs/ioctl.h",
+//#endif /* OPLUS_FEATURE_UFSPLUS */
     "sound/asequencer.h",
     "sound/asoc.h",
     "sound/asound.h",
@@ -999,6 +1000,7 @@ gen_headers_out_arm64 = [
     "camera/media/cam_isp_ife.h",
     "camera/media/cam_isp_tfe.h",
     "camera/media/cam_isp_vfe.h",
+    "camera/media/cam_isp_sfe.h",
     "camera/media/cam_jpeg.h",
     "camera/media/cam_lrme.h",
     "camera/media/cam_ope.h",
@@ -1006,6 +1008,8 @@ gen_headers_out_arm64 = [
     "camera/media/cam_sensor.h",
     "camera/media/cam_sync.h",
     "camera/media/cam_tfe.h",
+    "camera/oplus/media/oplus_cam_sensor.h",
+    "camera/oplus/media/oplus_cam_defs.h",
     "display/drm/msm_drm_pp.h",
     "display/drm/sde_drm.h",
     "display/media/mmm_color_fmt.h",
@@ -1013,6 +1017,9 @@ gen_headers_out_arm64 = [
     "display/hdcp/msm_hdmi_hdcp_mgr.h",
     "vidc/media/msm_media_info.h",
     "vidc/media/msm_vidc_utils.h",
+//ifdef OPLUS_FEATURE_PXLW_IRIS5
+    "display/drm/msm_drm_iris.h",
+//endif
 ]
 
 genrule {
@@ -1039,10 +1046,7 @@ genrule {
 
 genrule {
     name: "qti_generate_kernel_headers_arm64",
-    tools: [
-        "headers_install.sh",
-        "unifdef",
-    ],
+    tools: ["headers_install.sh"],
     tool_files: [
         "kernel_headers.py",
     ],
@@ -1064,7 +1068,6 @@ genrule {
         "--new_gen_headers_bp $(location :qti_generate_gen_headers_arm64) " +
         "--version_makefile $(location Makefile) " +
         "--headers_install $(location headers_install.sh) " +
-        "--unifdef $(location unifdef) " +
         "--include_uapi $(locations include/uapi/**/*.h)",
     out: ["linux/version.h"] + gen_headers_out_arm64,
 }
