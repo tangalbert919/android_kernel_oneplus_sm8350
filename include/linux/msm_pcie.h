@@ -49,7 +49,6 @@ struct msm_pcie_notify {
 };
 
 struct msm_pcie_register_event {
-	struct list_head node;
 	u32 events;
 	void *user;
 	enum msm_pcie_trigger mode;
