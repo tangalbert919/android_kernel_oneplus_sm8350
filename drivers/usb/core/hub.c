@@ -30,9 +30,6 @@
 #include <linux/random.h>
 #include <linux/pm_qos.h>
 #include <linux/kobject.h>
-#ifdef CONFIG_QGKI_MSM_BOOT_TIME_MARKER
-#include <soc/qcom/boot_stats.h>
-#endif
 
 #include <linux/uaccess.h>
 #include <asm/byteorder.h>
@@ -3571,8 +3568,9 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		/* drive resume for USB_RESUME_TIMEOUT msec */
 		dev_dbg(&udev->dev, "usb %sresume\n",
 				(PMSG_IS_AUTO(msg) ? "auto-" : ""));
-		usleep_range(USB_RESUME_TIMEOUT * 1000,
-				(USB_RESUME_TIMEOUT + 1) * 1000);
+		if (udev->parent != udev->bus->root_hub)
+			usleep_range(USB_RESUME_TIMEOUT * 1000,
+					(USB_RESUME_TIMEOUT + 1) * 1000);
 
 		/* Virtual root hubs can trigger on GET_PORT_STATUS to
 		 * stop resume signaling.  Then finish the resume
@@ -5715,7 +5713,6 @@ static int usb_reset_and_verify_device(struct usb_device *udev)
 	struct usb_hcd			*hcd = bus_to_hcd(udev->bus);
 	struct usb_device_descriptor	descriptor = udev->descriptor;
 	struct usb_host_bos		*bos;
-	char				buf[50];
 	int				i, j, ret = 0;
 	int				port1 = udev->portnum;
 
@@ -5795,18 +5792,6 @@ static int usb_reset_and_verify_device(struct usb_device *udev)
 	}
 	mutex_unlock(hcd->bandwidth_mutex);
 	usb_set_device_state(udev, USB_STATE_CONFIGURED);
-
-	/* Skip this marker for root-hubs */
-	if (udev->parent != NULL) {
-		scnprintf(buf, sizeof(buf),
-				"USB device reset with VID=%04x, PID=%04x ",
-				le16_to_cpu(udev->descriptor.idVendor),
-				le16_to_cpu(udev->descriptor.idProduct));
-		dev_info(&udev->dev, "%s\n", buf);
-#ifdef CONFIG_QGKI_MSM_BOOT_TIME_MARKER
-		place_marker(buf);
-#endif
-	}
 
 	/* Put interfaces back into the same altsettings as before.
 	 * Don't bother to send the Set-Interface request for interfaces

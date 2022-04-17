@@ -204,29 +204,40 @@ static void gsi_rw_timer_func(struct timer_list *t)
 static struct f_gsi *get_connected_gsi(void)
 {
 	struct f_gsi *connected_gsi;
+	bool gsi_connected = false;
 	int i;
 
 	for (i = 0; i < IPA_USB_MAX_TETH_PROT_SIZE; i++) {
 		if (inst_status[i].opts)
 			connected_gsi = inst_status[i].opts->gsi;
+		else
+			continue;
 
-		if (connected_gsi && atomic_read(&connected_gsi->connected))
-			return connected_gsi;
+		if (connected_gsi && atomic_read(&connected_gsi->connected)) {
+			gsi_connected = true;
+			break;
+		}
 	}
 
-	return NULL;
+	if (!gsi_connected)
+		connected_gsi = NULL;
+
+	return connected_gsi;
 }
 
 #define DEFAULT_RW_TIMER_INTERVAL 500 /* in ms */
 static ssize_t usb_gsi_rw_write(struct file *file,
 			const char __user *ubuf, size_t count, loff_t *ppos)
 {
-	struct f_gsi *gsi = NULL;
-	struct usb_function *func;
-	struct usb_gadget *gadget;
+	struct f_gsi *gsi;
 	u8 input;
-	int i;
 	int ret;
+
+	gsi = get_connected_gsi();
+	if (!gsi) {
+		log_event_dbg("%s: gsi not connected\n", __func__);
+		goto err;
+	}
 
 	if (ubuf == NULL) {
 		log_event_dbg("%s: buffer is Null.\n", __func__);
@@ -239,35 +250,23 @@ static ssize_t usb_gsi_rw_write(struct file *file,
 		goto err;
 	}
 
-	for (i = 0; i < IPA_USB_MAX_TETH_PROT_SIZE; i++) {
-		gsi = NULL;
-		if (inst_status[i].opts)
-			gsi = inst_status[i].opts->gsi;
+	if (gsi->debugfs_rw_timer_enable == !!input) {
+		if (!!input)
+			log_event_dbg("%s: RW already enabled\n", __func__);
+		else
+			log_event_dbg("%s: RW already disabled\n", __func__);
+		goto err;
+	}
 
-		if (gsi && atomic_read(&gsi->connected)) {
-			func = &gsi->function;
-			gadget = func->config->cdev->gadget;
-			gsi->debugfs_rw_timer_enable = !!input;
-			if (gadget->speed >= USB_SPEED_SUPER &&
-					!gsi->func_is_suspended) {
-				gsi->debugfs_rw_timer_enable = 0;
-				del_timer_sync(&gsi->gsi_rw_timer);
-				continue;
-			}
+	gsi->debugfs_rw_timer_enable = !!input;
 
-			if (gsi->debugfs_rw_timer_enable) {
-				mod_timer(&gsi->gsi_rw_timer, jiffies +
-				  msecs_to_jiffies(gsi->gsi_rw_timer_interval));
-				log_event_dbg("%s: timer initialized\n",
-								__func__);
-			} else {
-				del_timer_sync(&gsi->gsi_rw_timer);
-				log_event_dbg("%s: timer deleted\n", __func__);
-			}
-
-			if (gadget->speed < USB_SPEED_SUPER)
-				break;
-		}
+	if (gsi->debugfs_rw_timer_enable) {
+		mod_timer(&gsi->gsi_rw_timer, jiffies +
+			  msecs_to_jiffies(gsi->gsi_rw_timer_interval));
+		log_event_dbg("%s: timer initialized\n", __func__);
+	} else {
+		del_timer_sync(&gsi->gsi_rw_timer);
+		log_event_dbg("%s: timer deleted\n", __func__);
 	}
 
 err:
@@ -278,19 +277,14 @@ static int usb_gsi_rw_show(struct seq_file *s, void *unused)
 {
 
 	struct f_gsi *gsi;
-	int i;
-	u8 enable = 0;
 
-	for (i = 0; i < IPA_USB_MAX_TETH_PROT_SIZE; i++) {
-		gsi = NULL;
-		if (inst_status[i].opts)
-			gsi = inst_status[i].opts->gsi;
-
-		if (gsi && atomic_read(&gsi->connected))
-			enable |= gsi->debugfs_rw_timer_enable;
+	gsi = get_connected_gsi();
+	if (!gsi) {
+		log_event_dbg("%s: gsi not connected\n", __func__);
+		return 0;
 	}
 
-	seq_printf(s, "%d\n", enable);
+	seq_printf(s, "%d\n", gsi->debugfs_rw_timer_enable);
 
 	return 0;
 }
@@ -312,10 +306,15 @@ static const struct file_operations fops_usb_gsi_rw = {
 static ssize_t usb_gsi_rw_timer_write(struct file *file,
 			const char __user *ubuf, size_t count, loff_t *ppos)
 {
-	struct f_gsi *gsi = NULL;
+	struct f_gsi *gsi;
 	u16 timer_val;
-	int i;
 	int ret;
+
+	gsi = get_connected_gsi();
+	if (!gsi) {
+		log_event_dbg("%s: gsi not connected\n", __func__);
+		goto err;
+	}
 
 	if (ubuf == NULL) {
 		log_event_dbg("%s: buffer is NULL.\n", __func__);
@@ -333,15 +332,7 @@ static ssize_t usb_gsi_rw_timer_write(struct file *file,
 		goto err;
 	}
 
-	for (i = 0; i < IPA_USB_MAX_TETH_PROT_SIZE; i++) {
-		gsi = NULL;
-		if (inst_status[i].opts)
-			gsi = inst_status[i].opts->gsi;
-
-		if (gsi && atomic_read(&gsi->connected))
-			gsi->gsi_rw_timer_interval = timer_val;
-	}
-
+	gsi->gsi_rw_timer_interval = timer_val;
 err:
 	return count;
 }
@@ -501,12 +492,8 @@ static int ipa_connect_channels(struct gsi_data_port *d_port)
 	struct ipa_req_chan_out_params ipa_in_channel_out_params;
 	struct ipa_req_chan_out_params ipa_out_channel_out_params;
 
-	if (gsi->prot_id == IPA_USB_RMNET) {
-		d_port->in_request.use_tcm_mem = gsi->rmnet_use_tcm_mem;
-		/* override needed for moving from LLCC TCM to DDR memory */
-		d_port->in_request.buf_len = GSI_IN_RMNET_BUFF_SIZE;
-		d_port->in_request.num_bufs = GSI_NUM_IN_RMNET_BUFFERS;
-	}
+	log_event_dbg("IN: num_bufs:=%zu, buf_len=%zu\n",
+		d_port->in_request.num_bufs, d_port->in_request.buf_len);
 
 	ret = usb_gsi_ep_op(d_port->in_ep, &d_port->in_request,
 			GSI_EP_OP_PREPARE_TRBS);
@@ -515,9 +502,6 @@ static int ipa_connect_channels(struct gsi_data_port *d_port)
 				__func__, ret);
 		return ret;
 	}
-
-	log_event_dbg("IN: num_bufs:=%zu, buf_len=%zu\n",
-		d_port->in_request.num_bufs, d_port->in_request.buf_len);
 
 	ret = usb_gsi_ep_op(d_port->in_ep, &d_port->in_request,
 			GSI_EP_OP_STARTXFER);
@@ -1535,10 +1519,8 @@ static long gsi_ctrl_dev_ioctl(struct file *fp, unsigned int cmd,
 	gsi = inst_cur->opts->gsi;
 	c_port = &gsi->c_port;
 
-	if (!atomic_read(&gsi->connected) && cmd != QTI_CTRL_GET_LINE_STATE
-			&& cmd != GSI_MBIM_GPS_USB_STATUS) {
-		log_event_err("%s:cmd %u failed, USB not connected\n",
-					__func__, cmd);
+	if (!atomic_read(&gsi->connected)) {
+		log_event_err("USB cable not connected\n");
 		return -ECONNRESET;
 	}
 
@@ -1587,6 +1569,12 @@ static long gsi_ctrl_dev_ioctl(struct file *fp, unsigned int cmd,
 	case GSI_MBIM_EP_LOOKUP:
 		log_event_dbg("%s: EP_LOOKUP for prot id:%d", __func__,
 							gsi->prot_id);
+		if (!atomic_read(&gsi->connected)) {
+			log_event_dbg("EP_LOOKUP failed: not connected");
+			ret = -EAGAIN;
+			break;
+		}
+
 		if (gsi->prot_id == IPA_USB_DIAG &&
 				(gsi->d_port.in_channel_handle == -EINVAL)) {
 			ret = -EAGAIN;
@@ -1757,15 +1745,6 @@ static unsigned int gsi_xfer_bitrate(struct usb_gadget *g)
 		return 19 * 64 * 1 * 1000 * 8;
 }
 
-static void gsi_uevent_work(struct work_struct *w)
-{
-	struct gsi_ctrl_port *c_port =
-			container_of(w, struct gsi_ctrl_port, uevent_work);
-
-	if (c_port->dev)
-		kobject_uevent(&c_port->dev->kobj, KOBJ_CHANGE);
-}
-
 static int gsi_function_ctrl_port_init(struct f_gsi *gsi)
 {
 	int ret;
@@ -1785,9 +1764,6 @@ static int gsi_function_ctrl_port_init(struct f_gsi *gsi)
 	spin_lock_init(&gsi->c_port.lock);
 
 	init_waitqueue_head(&gsi->c_port.read_wq);
-	INIT_WORK(&gsi->c_port.uevent_work, gsi_uevent_work);
-	gsi->c_port.dev = NULL;
-	gsi->c_port.uevent_wq = NULL;
 
 	if (gsi->prot_id == IPA_USB_RMNET)
 		strlcat(gsi->c_port.name, GSI_RMNET_CTRL_NAME, sz);
@@ -1802,10 +1778,6 @@ static int gsi_function_ctrl_port_init(struct f_gsi *gsi)
 
 	if (!ctrl_dev_create)
 		return 0;
-
-	gsi->c_port.uevent_wq = alloc_workqueue(gsi->c_port.name,
-						WQ_UNBOUND | WQ_MEM_RECLAIM |
-						WQ_FREEZABLE, 1);
 
 	minor = ida_simple_get(&gsi_ida, 0, MAX_CDEV_INSTANCES, GFP_KERNEL);
 	if (minor < 0) {
@@ -1822,7 +1794,7 @@ static int gsi_function_ctrl_port_init(struct f_gsi *gsi)
 		goto err_cdev_add;
 	}
 
-	dev = device_create(gsi_class, NULL, MKDEV(major, minor), &gsi->c_port,
+	dev = device_create(gsi_class, NULL, MKDEV(major, minor), NULL,
 			gsi->c_port.name);
 	if (IS_ERR(dev)) {
 		log_event_err("%s: device_create failed for (%s)\n", __func__,
@@ -1830,8 +1802,6 @@ static int gsi_function_ctrl_port_init(struct f_gsi *gsi)
 		ret = PTR_ERR(dev);
 		goto err_create_dev;
 	}
-
-	gsi->c_port.dev = dev;
 
 	return 0;
 
@@ -2125,7 +2095,6 @@ static void gsi_rndis_command_complete(struct usb_ep *ep,
 		struct usb_request *req)
 {
 	struct f_gsi *gsi = req->context;
-	struct usb_composite_dev *cdev = gsi->function.config->cdev;
 	int status;
 	u32 MsgType;
 
@@ -2168,7 +2137,6 @@ static void gsi_rndis_command_complete(struct usb_ep *ep,
 			gsi_rndis_flow_ctrl_enable(!(*gsi->params->filter),
 					gsi->params);
 	}
-	cdev->setup_pending = false;
 }
 
 static void
@@ -2218,10 +2186,8 @@ invalid:
 static void gsi_ctrl_cmd_complete(struct usb_ep *ep, struct usb_request *req)
 {
 	struct f_gsi *gsi = req->context;
-	struct usb_composite_dev *cdev = gsi->function.config->cdev;
 
 	gsi_ctrl_send_cpkt_tomodem(gsi, req->buf, req->actual);
-	cdev->setup_pending = false;
 }
 
 static void gsi_ctrl_reset_cmd_complete(struct usb_ep *ep,
@@ -2363,10 +2329,6 @@ gsi_setup(struct usb_function *f, const struct usb_ctrlrequest *ctrl)
 			gsi->rmnet_dtr_status = line_state;
 		log_event_dbg("%s: USB_CDC_REQ_SET_CONTROL_LINE_STATE DTR:%d\n",
 						__func__, line_state);
-		if (gsi->c_port.uevent_wq)
-			queue_work(gsi->c_port.uevent_wq,
-					&gsi->c_port.uevent_work);
-
 		gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
 		value = 0;
 		break;
@@ -2445,8 +2407,6 @@ invalid:
 		value = usb_ep_queue(cdev->gadget->ep0, req, GFP_ATOMIC);
 		if (value < 0)
 			log_event_err("response on err %d", value);
-		else
-			cdev->setup_pending = true;
 	}
 
 	/* device either stalls (value < 0) or reports success */
@@ -2601,9 +2561,6 @@ static int gsi_set_alt(struct usb_function *f, unsigned int intf,
 			gsi->prot_id == IPA_USB_MBIM)
 		gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
 
-	if (gsi->c_port.uevent_wq)
-		queue_work(gsi->c_port.uevent_wq, &gsi->c_port.uevent_work);
-
 	return ret;
 
 notify_ep_disable:
@@ -2636,18 +2593,9 @@ static void gsi_disable(struct usb_function *f)
 	}
 
 	gsi_ctrl_clear_cpkt_queues(gsi, false);
-
-	if (gsi->c_port.uevent_wq)
-		queue_work(gsi->c_port.uevent_wq, &gsi->c_port.uevent_work);
-
 	/* send 0 len pkt to qti/qbi/gps to notify state change */
 	gsi_ctrl_send_cpkt_tomodem(gsi, NULL, 0);
 	gsi->c_port.notify_req_queued = false;
-
-	gsi->func_is_suspended = false;
-	gsi->func_wakeup_allowed = false;
-	gsi->func_wakeup_pending = false;
-
 	/* Disable Data Path  - only if it was initialized already (alt=1) */
 	if (!gsi->data_interface_up) {
 		log_event_dbg("%s: data intf is closed", __func__);
@@ -2679,7 +2627,6 @@ static void gsi_suspend(struct usb_function *f)
 		return;
 	}
 
-	gsi->c_port.is_suspended = true;
 	/*
 	 * GPS doesn't use any data interface, hence bail out as there is no
 	 * GSI specific handling needed.
@@ -2689,6 +2636,7 @@ static void gsi_suspend(struct usb_function *f)
 		return;
 	}
 
+	gsi->c_port.is_suspended = true;
 	block_db = true;
 	usb_gsi_ep_op(gsi->d_port.in_ep, (void *)&block_db,
 			GSI_EP_OP_SET_CLR_BLOCK_DBL);
@@ -2739,8 +2687,6 @@ static void gsi_resume(struct usb_function *f)
 	/* Check any pending cpkt, and queue immediately on resume */
 	gsi_ctrl_send_notification(gsi);
 
-	gsi->rwake_inprogress = false;
-
 	if (gsi->prot_id == IPA_USB_GPS) {
 		log_event_dbg("%s: resume done\n", __func__);
 		return;
@@ -2759,6 +2705,8 @@ static void gsi_resume(struct usb_function *f)
 			gsi_rndis_flow_ctrl_enable(false, gsi->params);
 		gsi->params->state = RNDIS_DATA_INITIALIZED;
 	}
+
+	gsi->rwake_inprogress = false;
 
 	post_event(&gsi->d_port, EVT_RESUMED);
 	queue_delayed_work(gsi->d_port.ipa_usb_wq, &gsi->d_port.usb_ipa_w, 0);
@@ -3010,23 +2958,12 @@ static void gsi_get_ether_addr(const char *str, u8 *dev_addr)
 	random_ether_addr(dev_addr);
 }
 
-void rmnet_gsi_update_in_buffer_mem_type(struct usb_function *f, bool use_tcm)
-{
-	struct f_gsi *gsi = func_to_gsi(f);
-
-	if (gsi && gsi->prot_id == IPA_USB_RMNET)
-		gsi->rmnet_use_tcm_mem = use_tcm;
-}
-EXPORT_SYMBOL(rmnet_gsi_update_in_buffer_mem_type);
-
 static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 {
 	struct usb_composite_dev *cdev = c->cdev;
 	struct gsi_function_bind_info info = {0};
 	struct f_gsi *gsi = func_to_gsi(f);
 	struct rndis_params *params;
-	struct usb_os_desc *descs[1];
-	struct gsi_opts *opts;
 	int status;
 	__u8  class;
 	__u8  subclass;
@@ -3072,9 +3009,15 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.ss_desc_hdr = gsi_eth_ss_function;
 		info.in_epname = "gsi-epin";
 		info.out_epname = "gsi-epout";
+#ifdef CONFIG_USB_LOW_MEM_VARIANT
+		info.in_req_buf_len = GSI_IN_BUFF_SIZE;
+		gsi->d_port.in_aggr_size = GSI_IN_LOW_MEM_RNDIS_AGGR_SIZE;
+		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
+#else
 		info.in_req_buf_len = GSI_IN_RNDIS_BUFF_SIZE;
 		gsi->d_port.in_aggr_size = GSI_IN_RNDIS_AGGR_SIZE;
 		info.in_req_num_buf = GSI_NUM_IN_RNDIS_BUFFERS;
+#endif
 		gsi->d_port.out_aggr_size = GSI_OUT_AGGR_SIZE;
 		info.out_req_buf_len = GSI_OUT_AGGR_SIZE;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
@@ -3219,23 +3162,18 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.notify_buf_len = sizeof(struct usb_cdc_notification);
 		mbim_gsi_desc.wMaxSegmentSize = cpu_to_le16(0x800);
 
-		if (cdev->use_os_string) {
-			f->os_desc_table = kzalloc(sizeof(*f->os_desc_table),
-						GFP_KERNEL);
-			if (!f->os_desc_table)
-				return -ENOMEM;
-			opts = container_of(f->fi, struct gsi_opts, func_inst);
-			f->os_desc_n = 1;
-			f->os_desc_table[0].os_desc = &opts->os_desc;
-			f->os_desc_table[0].if_id = gsi->data_id;
-			opts->os_desc.ext_compat_id = opts->ext_compat_id;
-			descs[0] = &opts->os_desc;
-			snprintf(sub_compatible_id, sizeof(sub_compatible_id),
-					"%u", c->bConfigurationValue);
-			memcpy(descs[0]->ext_compat_id, compatible_id,
-					strlen(compatible_id));
-			memcpy(descs[0]->ext_compat_id + 8, sub_compatible_id,
-					strlen(sub_compatible_id));
+		/*
+		 * If MBIM is bound in a config other than the first, tell
+		 * Windows about it by returning the num as a string in the
+		 * OS descriptor's subCompatibleID field. Windows only supports
+		 * up to config #4.
+		 */
+		if (c->bConfigurationValue >= 2 &&
+				c->bConfigurationValue <= 4) {
+			log_event_dbg("MBIM in configuration %d",
+					c->bConfigurationValue);
+			mbim_gsi_ext_config_desc.function.subCompatibleID[0] =
+				c->bConfigurationValue + '0';
 		}
 		break;
 	case IPA_USB_RMNET:
@@ -3257,9 +3195,15 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.in_epname = "gsi-epin";
 		info.out_epname = "gsi-epout";
 		gsi->d_port.in_aggr_size = GSI_IN_RMNET_AGGR_SIZE;
+#ifdef CONFIG_USB_LOW_MEM_VARIANT
+		info.in_req_buf_len = GSI_IN_BUFF_SIZE;
+		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
+		info.out_req_buf_len = GSI_OUT_LOW_MEM_RMNET_BUF_LEN;
+#else
 		info.in_req_buf_len = GSI_IN_RMNET_BUFF_SIZE;
 		info.in_req_num_buf = GSI_NUM_IN_RMNET_BUFFERS;
 		info.out_req_buf_len = GSI_OUT_RMNET_BUF_LEN;
+#endif
 		gsi->d_port.out_aggr_size = GSI_OUT_AGGR_SIZE;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
 		info.notify_buf_len = sizeof(struct usb_cdc_notification);
@@ -3398,7 +3342,6 @@ skip_ipa_init:
 
 dereg_rndis:
 	rndis_deregister(gsi->params);
-	kfree(f->os_desc_table);
 fail:
 	return status;
 }
@@ -3433,11 +3376,8 @@ static void gsi_unbind(struct usb_configuration *c, struct usb_function *f)
 		rndis_deregister(gsi->params);
 	}
 
-	if (gsi->prot_id == IPA_USB_MBIM) {
-		kfree(f->os_desc_table);
-		f->os_desc_table = NULL;
-		f->os_desc_n = 0;
-	}
+	if (gsi->prot_id == IPA_USB_MBIM)
+		mbim_gsi_ext_config_desc.function.subCompatibleID[0] = 0;
 
 	usb_free_all_descriptors(f);
 
@@ -3813,60 +3753,15 @@ static struct config_item_type gsi_func_ecm_type = {
 	.ct_owner	= THIS_MODULE,
 };
 
-static ssize_t gsi_rmnet_use_tcm_mem_show(struct config_item *item, char *page)
-{
-	struct f_gsi *gsi = to_gsi_opts(item)->gsi;
-
-	return scnprintf(page, PAGE_SIZE, "%s\n",
-			gsi->rmnet_use_tcm_mem ? "Enabled" : "Disabled");
-}
-
-static ssize_t gsi_rmnet_use_tcm_mem_store(struct config_item *item,
-			const char *page, size_t len)
-{
-	struct f_gsi *gsi = to_gsi_opts(item)->gsi;
-	bool enable;
-
-	if (kstrtobool(page, &enable))
-		return -EINVAL;
-
-	gsi->rmnet_use_tcm_mem = enable;
-	return len;
-}
-CONFIGFS_ATTR(gsi_, rmnet_use_tcm_mem);
-
-static struct configfs_attribute *gsi_rmnet_attrs[] = {
-	&gsi_attr_info,
-	&gsi_attr_rmnet_use_tcm_mem,
-	NULL,
-};
-
-static struct config_item_type gsi_func_rmnet_type = {
-	.ct_item_ops	= &gsi_item_ops,
-	.ct_attrs	= gsi_rmnet_attrs,
-	.ct_owner	= THIS_MODULE,
-};
-
 static void gsi_inst_clean(struct gsi_opts *opts)
 {
 	if (opts->gsi->c_port.cdev.dev) {
 		struct cdev *cdev = &opts->gsi->c_port.cdev;
-		struct f_gsi *gsi = opts->gsi;
 		int minor = MINOR(cdev->dev);
-
-		if (gsi->c_port.dev)
-			dev_set_drvdata(gsi->c_port.dev, NULL);
-
-		if (gsi->c_port.uevent_wq) {
-			cancel_work_sync(&gsi->c_port.uevent_work);
-			destroy_workqueue(gsi->c_port.uevent_wq);
-			gsi->c_port.uevent_wq = NULL;
-		}
 
 		device_destroy(gsi_class, cdev->dev);
 		cdev_del(cdev);
 		cdev->dev = 0;
-		gsi->c_port.dev = NULL;
 		ida_simple_remove(&gsi_ida, minor);
 	}
 
@@ -3882,8 +3777,6 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 	char gsi_inst_name[MAX_INST_NAME_LEN + sizeof("gsi.") + 1];
 	void *ipc_log_ctxt;
 	struct gsi_opts *opts, *opts_prev;
-	struct usb_os_desc *descs[1];
-	char *names[1];
 
 	opts = container_of(fi, struct gsi_opts, func_inst);
 
@@ -3908,10 +3801,6 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 	}
 	mutex_unlock(&inst_status[prot_id].gsi_lock);
 
-	if (prot_id == IPA_USB_RMNET)
-		config_group_init_type_name(&opts->func_inst.group,
-						fi->group.cg_item.ci_name,
-						&gsi_func_rmnet_type);
 	if (prot_id == IPA_USB_RNDIS)
 		config_group_init_type_name(&opts->func_inst.group,
 						fi->group.cg_item.ci_name,
@@ -3920,16 +3809,6 @@ static int gsi_set_inst_name(struct usb_function_instance *fi,
 		config_group_init_type_name(&opts->func_inst.group,
 						fi->group.cg_item.ci_name,
 						&gsi_func_ecm_type);
-
-	if (prot_id == IPA_USB_MBIM) {
-		opts->os_desc.ext_compat_id = opts->ext_compat_id;
-		INIT_LIST_HEAD(&opts->os_desc.ext_prop);
-		descs[0] = &opts->os_desc;
-		names[0] = "MBIM";
-		opts->interf_group = usb_os_desc_prepare_interf_dir(
-						&opts->func_inst.group, 1,
-						descs, names, THIS_MODULE);
-	}
 
 	gsi = gsi_function_init(prot_id);
 	if (IS_ERR(gsi))
@@ -3979,8 +3858,6 @@ static void gsi_free_inst(struct usb_function_instance *f)
 	}
 
 	ipc_log_context_destroy(opts->gsi->ipc_log_ctxt);
-	if (opts && opts->interf_group)
-		kfree(opts->interf_group);
 	/* Clear instance status */
 	gsi_inst_clean(opts);
 	inst_status[prot_id].inst_exist = false;
@@ -4022,41 +3899,6 @@ DECLARE_USB_FUNCTION(gsi, gsi_alloc_inst, gsi_alloc);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("GSI function driver");
 
-static int usb_gsi_uevent(struct device *dev, struct kobj_uevent_env *env)
-{
-	struct gsi_ctrl_port *c_port = dev_get_drvdata(dev);
-	struct f_gsi *gsi;
-	char *str = "undefined";
-
-	if (!c_port) {
-		dev_dbg(dev, "%s: gsi is not initialized\n", __func__);
-		add_uevent_var(env, "STATE=%s", str);
-		return 0;
-	}
-
-	gsi = c_port_to_gsi(c_port);
-
-	switch (gsi->prot_id) {
-	case IPA_USB_RMNET:
-		str = gsi->rmnet_dtr_status ? "connected" : "disconnected";
-		break;
-	case IPA_USB_MBIM:
-	case IPA_USB_DIAG:
-	case IPA_USB_GPS:
-		str = atomic_read(&gsi->connected) ?
-					"connected" : "disconnected";
-		break;
-	default:
-		return 0;
-	}
-
-	add_uevent_var(env, "STATE=%s", str);
-
-	log_event_dbg("%s:STATE=%s\n", c_port->name, str);
-
-	return 0;
-}
-
 static int fgsi_init(void)
 {
 	int i;
@@ -4080,7 +3922,6 @@ static int fgsi_init(void)
 		pr_err("%s: class_create() failed:%d\n", __func__, ret);
 		return ret;
 	}
-	gsi_class->dev_uevent = usb_gsi_uevent;
 
 	ret = alloc_chrdev_region(&dev, 0, MAX_CDEV_INSTANCES, "gsi_usb");
 	if (ret) {

@@ -13,15 +13,18 @@
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/utsname.h>
-#ifdef CONFIG_QGKI_MSM_BOOT_TIME_MARKER
-#include <soc/qcom/boot_stats.h>
-#endif
 
 #include <linux/usb/composite.h>
 #include <linux/usb/otg.h>
 #include <asm/unaligned.h>
 
 #include "u_os_desc.h"
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+static bool enable_l1_for_hs;
+module_param(enable_l1_for_hs, bool, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(enable_l1_for_hs, "Enable support for L1 LPM for HS devices");
+#endif
 
 /**
  * struct usb_os_string - represents OS String to be reported by a gadget
@@ -892,9 +895,6 @@ static int set_config(struct usb_composite_dev *cdev,
 	if (!c)
 		goto done;
 
-#ifdef CONFIG_QGKI_MSM_BOOT_TIME_MARKER
-	place_marker("M - USB Device is enumerated");
-#endif
 	usb_gadget_set_state(gadget, USB_STATE_CONFIGURED);
 	cdev->config = c;
 
@@ -1727,12 +1727,23 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 			cdev->desc.bMaxPacketSize0 =
 				cdev->gadget->ep0->maxpacket;
 			if (gadget_is_superspeed(gadget)) {
+#ifdef OPLUS_FEATURE_CHG_BASIC
+				if (gadget->speed >= USB_SPEED_SUPER) {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
+					cdev->desc.bMaxPacketSize0 = 9;
+				} else if (gadget->lpm_capable || enable_l1_for_hs)  {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
+				} else {
+					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
+				}
+#else
 				if (gadget->speed >= USB_SPEED_SUPER) {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
 					cdev->desc.bMaxPacketSize0 = 9;
 				} else {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
 				}
+#endif
 			} else {
 				if (gadget->lpm_capable)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0201);
@@ -1770,7 +1781,11 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				value = min(w_length, (u16) value);
 			break;
 		case USB_DT_BOS:
+#ifdef OPLUS_FEATURE_CHG_BASIC
+			if ((gadget_is_superspeed(gadget) && (gadget->speed >= USB_SPEED_SUPER)) ||
+#else
 			if (gadget_is_superspeed(gadget) ||
+#endif
 			    gadget->lpm_capable) {
 				value = bos_desc(cdev);
 				value = min(w_length, (u16) value);
@@ -2419,10 +2434,7 @@ void composite_resume(struct usb_gadget *gadget)
 	/* REVISIT:  should we have config level
 	 * suspend/resume callbacks?
 	 */
-	INFO(cdev, "USB Resume end\n");
-#ifdef CONFIG_QGKI_MSM_BOOT_TIME_MARKER
-	place_marker("M - USB Device is resumed");
-#endif
+	DBG(cdev, "resume\n");
 	if (cdev->driver->resume)
 		cdev->driver->resume(cdev);
 	if (cdev->config) {

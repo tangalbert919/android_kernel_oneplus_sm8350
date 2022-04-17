@@ -313,7 +313,7 @@ void dwc3_gadget_giveback(struct dwc3_ep *dep, struct dwc3_request *req,
 	spin_lock(&dwc->lock);
 }
 
-#define DWC_CMD_TIMEOUT 5000
+#define DWC_CMD_TIMEOUT 3000
 /**
  * dwc3_send_gadget_generic_command - issue a generic command for the controller
  * @dwc: pointer to the controller context
@@ -1655,8 +1655,7 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
 {
 	struct dwc3		*dwc = dep->dwc;
 
-	if (!dep->endpoint.desc || !dwc->pullups_connected ||
-						!dwc->connected) {
+	if (!dep->endpoint.desc || !dwc->pullups_connected) {
 		dev_err_ratelimited(dwc->dev, "%s: can't queue to disabled endpoint\n",
 				dep->name);
 		return -ESHUTDOWN;
@@ -1712,9 +1711,7 @@ static int __dwc3_gadget_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
 		}
 	}
 
-	__dwc3_gadget_kick_transfer(dep);
-
-	return 0;
+	return __dwc3_gadget_kick_transfer(dep);
 }
 
 static bool dwc3_gadget_is_suspended(struct dwc3 *dwc)
@@ -1778,11 +1775,11 @@ static void dwc3_gadget_ep_skip_trbs(struct dwc3_ep *dep, struct dwc3_request *r
 static void dwc3_gadget_ep_cleanup_cancelled_requests(struct dwc3_ep *dep)
 {
 	struct dwc3_request		*req;
+	struct dwc3_request		*tmp;
 	struct dwc3			*dwc = dep->dwc;
 	int				request_count = 0;
 
-	while (!list_empty(&dep->cancelled_list)) {
-		req = next_request(&dep->cancelled_list);
+	list_for_each_entry_safe(req, tmp, &dep->cancelled_list, list) {
 		dwc3_gadget_ep_skip_trbs(dep, req);
 		dwc3_gadget_giveback(dep, req, -ECONNRESET);
 		request_count++;
@@ -1804,6 +1801,11 @@ static int dwc3_gadget_ep_dequeue(struct usb_ep *ep,
 
 	unsigned long			flags;
 	int				ret = 0;
+
+	if (atomic_read(&dwc->in_lpm)) {
+		dev_err(dwc->dev, "Unable to dequeue while in LPM\n");
+		return -EAGAIN;
+	}
 
 	trace_dwc3_ep_dequeue(req);
 	dbg_ep_dequeue(dep->number, req);
@@ -1843,12 +1845,6 @@ static int dwc3_gadget_ep_dequeue(struct usb_ep *ep,
 			list_for_each_entry_safe(r, t, &dep->started_list, list)
 				dwc3_gadget_move_cancelled_request(r);
 
-			/* If ep isn't started, then there's no end transfer
-			 * pending
-			 */
-			if (!(dep->flags & DWC3_EP_END_TRANSFER_PENDING))
-				dwc3_gadget_ep_cleanup_cancelled_requests(dep);
-
 			goto out;
 		}
 	}
@@ -1866,8 +1862,6 @@ int __dwc3_gadget_ep_set_halt(struct dwc3_ep *dep, int value, int protocol)
 {
 	struct dwc3_gadget_ep_cmd_params	params;
 	struct dwc3				*dwc = dep->dwc;
-	struct dwc3_request			*req;
-	struct dwc3_request			*tmp;
 	int					ret;
 
 	if (!dep->endpoint.desc) {
@@ -1926,15 +1920,13 @@ int __dwc3_gadget_ep_set_halt(struct dwc3_ep *dep, int value, int protocol)
 		if (!dep->gsi) {
 			dwc3_stop_active_transfer(dep, true, true);
 
-			list_for_each_entry_safe(req, tmp, &dep->started_list, list)
-				dwc3_gadget_move_cancelled_request(req);
+			if (!list_empty(&dep->started_list))
+				dep->flags |= DWC3_EP_DELAY_START;
 
 			if (dep->flags & DWC3_EP_END_TRANSFER_PENDING) {
 				dep->flags |= DWC3_EP_PENDING_CLEAR_STALL;
 				return 0;
 			}
-
-			dwc3_gadget_ep_cleanup_cancelled_requests(dep);
 		}
 
 		ret = dwc3_send_clear_stall_ep_cmd(dep);
@@ -3170,8 +3162,7 @@ static int dwc3_gadget_ep_reclaim_completed_trb(struct dwc3_ep *dep,
 
 	if (req->needs_extra_trb && !(trb->ctrl & DWC3_TRB_CTRL_CHN)) {
 		trb->ctrl &= ~DWC3_TRB_CTRL_HWO;
-		return (((event->status & DEPEVT_STATUS_IOC) &&
-				(trb->ctrl & DWC3_TRB_CTRL_IOC)) ? 1 : 0);
+		return 1;
 	}
 
 	count = trb->size & DWC3_TRB_SIZE_MASK;
@@ -3422,13 +3413,10 @@ static void dwc3_endpoint_interrupt(struct dwc3 *dwc,
 		dep->dbg_ep_events.epcmdcomplete++;
 		cmd = DEPEVT_PARAMETER_CMD(event->parameters);
 
-		if (cmd == DWC3_DEPCMD_ENDTRANSFER &&
-			(dep->flags & DWC3_EP_END_TRANSFER_PENDING)) {
+		if (cmd == DWC3_DEPCMD_ENDTRANSFER) {
 			dep->flags &= ~DWC3_EP_END_TRANSFER_PENDING;
 			dep->flags &= ~DWC3_EP_TRANSFER_STARTED;
 			dwc3_gadget_ep_cleanup_cancelled_requests(dep);
-			dbg_log_string("DWC3_DEPEVT_EPCMDCMPLT (%d)",
-							dep->number);
 
 			if (dep->flags & DWC3_EP_PENDING_CLEAR_STALL) {
 				struct dwc3 *dwc = dep->dwc;
@@ -3511,8 +3499,6 @@ static void dwc3_reset_gadget(struct dwc3 *dwc)
 {
 	struct usb_gadget_driver *gadget_driver;
 
-	dwc->connected = false;
-
 	if (!dwc->gadget_driver)
 		return;
 
@@ -3530,11 +3516,6 @@ int dwc3_stop_active_transfer(struct dwc3_ep *dep, bool force, bool interrupt)
 	struct dwc3_gadget_ep_cmd_params params;
 	u32 cmd;
 	int ret;
-
-	if (atomic_read(&dwc->in_lpm)) {
-		dev_err(dwc->dev, "cannot stop transfers while in LPM\n");
-		return -EINVAL;
-	}
 
 	if (!(dep->flags & DWC3_EP_TRANSFER_STARTED) ||
 	    (dep->flags & DWC3_EP_END_TRANSFER_PENDING))
@@ -3650,6 +3631,8 @@ static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc)
 static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 {
 	u32			reg;
+
+	dwc->connected = true;
 
 	/*
 	 * WORKAROUND: DWC3 revisions <1.88a have an issue which
@@ -3835,8 +3818,6 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		reg &= ~DWC3_DCTL_HIRD_THRES_MASK;
 		dwc3_writel(dwc->regs, DWC3_DCTL, reg);
 	}
-
-	dwc->connected = true;
 
 	dep = dwc->eps[0];
 	ret = __dwc3_gadget_ep_enable(dep, DWC3_DEPCFG_ACTION_MODIFY);
@@ -4228,7 +4209,7 @@ static irqreturn_t dwc3_check_event_buf(struct dwc3_event_buffer *evt)
 
 	dwc = evt->dwc;
 	start_time = ktime_get();
-	atomic_inc(&dwc->irq_cnt);
+	dwc->irq_cnt++;
 
 	/* controller reset is still pending */
 	if (dwc->err_evt_seen)
@@ -4373,7 +4354,11 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 	dwc->gadget.speed		= USB_SPEED_UNKNOWN;
 	dwc->gadget.sg_supported	= true;
 	dwc->gadget.name		= "dwc3-gadget";
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	//dwc->gadget.lpm_capable		= true;
+#else
 	dwc->gadget.lpm_capable		= true;
+#endif
 
 	/*
 	 * FIXME We might be setting max_speed to <SUPER, however versions
