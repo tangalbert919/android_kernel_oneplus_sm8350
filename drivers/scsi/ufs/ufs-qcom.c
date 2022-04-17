@@ -494,6 +494,17 @@ static int ufs_qcom_phy_power_on(struct ufs_hba *hba)
 	int ret = 0;
 
 	mutex_lock(&host->phy_mutex);
+	if (hba->curr_dev_pwr_mode == UFS_POWERDOWN_PWR_MODE &&
+			hba->clk_gating.state != CLKS_ON) {
+		ret = -1;
+		dev_err(hba->dev, "%s: abort phy power on, clks are off %d\n",
+				__func__, ret);
+
+		mutex_unlock(&host->phy_mutex);
+
+		return ret;
+	}
+
 	if (!host->is_phy_pwr_on) {
 		ret = phy_power_on(phy);
 		if (ret) {
@@ -993,14 +1004,12 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	struct phy *phy = host->generic_phy;
 	struct device *dev = hba->dev;
-	struct device_node *np = dev->of_node;
 
 	switch (status) {
 	case PRE_CHANGE:
-		if (!of_property_read_bool(np, "secondary-storage") &&
-		    strlen(android_boot_dev) &&
-		    strcmp(android_boot_dev, dev_name(dev)))
+		if (strlen(android_boot_dev) && strcmp(android_boot_dev, dev_name(dev))) {
 			return -ENODEV;
+		}
 
 		if (ufs_qcom_cfg_timers(hba, UFS_PWM_G1, SLOWAUTO_MODE,
 					0, true)) {
@@ -1997,8 +2006,6 @@ static int ufs_qcom_setup_clocks(struct ufs_hba *hba, bool on,
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int err = 0;
-	struct list_head *head = &hba->clk_list_head;
-	struct ufs_clk_info *clki;
 
 	/*
 	 * In case ufs_qcom_init() is not yet done, simply ignore.
@@ -2023,33 +2030,6 @@ static int ufs_qcom_setup_clocks(struct ufs_hba *hba, bool on,
 					dev_err(hba->dev, "%s: phy power off failed, ret = %d\n",
 							 __func__, err);
 					return err;
-				}
-			}
-
-			if (list_empty(head)) {
-				dev_err(hba->dev, "%s: clk list is empty\n", __func__);
-				return err;
-			}
-			/*
-			 * As per the latest hardware programming guide,
-			 * during Hibern8 enter with power collapse :
-			 * SW should disable HW clock control for UFS ICE
-			 * clock (GCC_UFS_ICE_CORE_CBCR.HW_CTL=0)
-			 * before ufs_ice_core_clk is turned off.
-			 * In device tree, we need to add UFS ICE clocks
-			 * in below fixed order:
-			 * clock-names =
-			 * "core_clk_ice";
-			 * "core_clk_ice_hw_ctl";
-			 * This way no extra check is required in UFS
-			 * clock enable path as clk enable order will be
-			 * already taken care in ufshcd_setup_clocks().
-			 */
-			list_for_each_entry(clki, head, list) {
-				if (!IS_ERR_OR_NULL(clki->clk) &&
-					!strcmp(clki->name, "core_clk_ice_hw_ctl")) {
-					clk_disable_unprepare(clki->clk);
-					clki->enabled = on;
 				}
 			}
 		}
@@ -2253,7 +2233,13 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 			__func__, err);
 		goto out_release_mem;
 	}
-
+#if defined(CONFIG_UFSFEATURE)
+	if (ufsf_check_query(ioctl_data->opcode)) {
+		err = ufsf_query_ioctl(&hba->ufsf, lun, buffer, ioctl_data,
+				       UFSFEATURE_SELECTOR);
+		goto out_release_mem;
+	}
+#endif
 	/* verify legal parameters & send query */
 	switch (ioctl_data->opcode) {
 	case UPIU_QUERY_OPCODE_READ_DESC:
@@ -2263,6 +2249,9 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		case QUERY_DESC_IDN_INTERCONNECT:
 		case QUERY_DESC_IDN_GEOMETRY:
 		case QUERY_DESC_IDN_POWER:
+#ifdef OPLUS_FEATURE_STORAGE_TOOL
+		case QUERY_DESC_IDN_HEALTH:
+#endif
 			index = 0;
 			break;
 		case QUERY_DESC_IDN_UNIT:
@@ -2307,6 +2296,9 @@ ufs_qcom_query_ioctl(struct ufs_hba *hba, u8 lun, void __user *buffer)
 		case QUERY_ATTR_IDN_EE_CONTROL:
 		case QUERY_ATTR_IDN_EE_STATUS:
 		case QUERY_ATTR_IDN_SECONDS_PASSED:
+#ifdef OPLUS_FEATURE_STORAGE_TOOL
+		case QUERY_ATTR_IDN_FFU_STATUS:
+#endif
 			index = 0;
 			break;
 		case QUERY_ATTR_IDN_DYN_CAP_NEEDED:
