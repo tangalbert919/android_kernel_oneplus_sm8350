@@ -75,8 +75,6 @@
 
 #include "uid16.h"
 
-#include <trace/hooks/sys.h>
-
 #ifndef SET_UNALIGN_CTL
 # define SET_UNALIGN_CTL(a, b)	(-EINVAL)
 #endif
@@ -2646,7 +2644,6 @@ SYSCALL_DEFINE5(prctl, int, option, unsigned long, arg2, unsigned long, arg3,
 		error = -EINVAL;
 		break;
 	}
-	trace_android_vh_syscall_prctl_finished(option, me);
 	return error;
 }
 
