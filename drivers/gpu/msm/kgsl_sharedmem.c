@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2002,2007-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2002,2007-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <asm/cacheflush.h>
@@ -58,6 +58,12 @@ static const struct kgsl_memtype memtypes[] = {
 	MEMTYPE(KGSL_MEMTYPE_MULTISAMPLE, "egl_multisample"),
 	MEMTYPE(KGSL_MEMTYPE_KERNEL, "kernel"),
 };
+
+
+
+
+
+
 
 /* An attribute for showing per-process memory statistics */
 struct kgsl_mem_entry_attribute {
@@ -136,7 +142,18 @@ imported_mem_show(struct kgsl_process_private *priv,
 			}
 		}
 
-		kgsl_mem_entry_put(entry);
+		/*
+		 * If refcount on mem entry is the last refcount, we will
+		 * call kgsl_mem_entry_destroy and detach it from process
+		 * list. When there is no refcount on the process private,
+		 * we will call kgsl_destroy_process_private to do cleanup.
+		 * During cleanup, we will try to remove the same sysfs
+		 * node which is in use by the current thread and this
+		 * situation will end up in a deadloack.
+		 * To avoid this situation, use a worker to put the refcount
+		 * on mem entry.
+		 */
+		kgsl_mem_entry_put_deferred(entry);
 		spin_lock(&priv->mem_lock);
 	}
 	spin_unlock(&priv->mem_lock);
@@ -202,10 +219,10 @@ static ssize_t mem_entry_sysfs_show(struct kobject *kobj,
 	ssize_t ret;
 
 	/*
-	 * kgsl_process_init_sysfs takes a refcount to the process_private,
-	 * which is put when the kobj is released. This implies that priv will
-	 * not be freed until this function completes, and no further locking
-	 * is needed.
+	 * sysfs_remove_file waits for reads to complete before the node is
+	 * deleted and process private is freed only once kobj is released.
+	 * This implies that priv will not be freed until this function
+	 * completes, and no further locking is needed.
 	 */
 	priv = kobj ? container_of(kobj, struct kgsl_process_private, kobj) :
 			NULL;
@@ -227,12 +244,6 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 	u64 size = 0;
 	int id = 0;
 
-	/*
-	 * kgsl_process_init_sysfs takes a refcount to the process_private,
-	 * which is put when the kobj is released. This implies that priv will
-	 * not be freed until this function completes, and no further locking
-	 * is needed.
-	 */
 	priv = container_of(kobj, struct kgsl_process_private, kobj_memtype);
 	memtype = container_of(attr, struct kgsl_memtype, attr);
 
@@ -253,7 +264,7 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 		if (type == memtype->type)
 			size += memdesc->size;
 
-		kgsl_mem_entry_put(entry);
+		kgsl_mem_entry_put_deferred(entry);
 		spin_lock(&priv->mem_lock);
 	}
 	spin_unlock(&priv->mem_lock);
@@ -261,13 +272,11 @@ static ssize_t memtype_sysfs_show(struct kobject *kobj,
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", size);
 }
 
+
+
+/* Dummy release function - we have nothing to do here */
 static void mem_entry_release(struct kobject *kobj)
 {
-	struct kgsl_process_private *priv;
-
-	priv = container_of(kobj, struct kgsl_process_private, kobj);
-	/* Put the refcount we got in kgsl_process_init_sysfs */
-	kgsl_process_private_put(priv);
 }
 
 static const struct sysfs_ops mem_entry_sysfs_ops = {
@@ -286,6 +295,9 @@ static const struct sysfs_ops memtype_sysfs_ops = {
 static struct kobj_type ktype_memtype = {
 	.sysfs_ops = &memtype_sysfs_ops,
 };
+
+
+
 
 static struct mem_entry_stats mem_stats[] = {
 	MEM_ENTRY_STAT(KGSL_MEM_ENTRY_KERNEL, kernel),
@@ -329,9 +341,6 @@ void kgsl_process_init_sysfs(struct kgsl_device *device,
 {
 	int i;
 
-	/* Keep private valid until the sysfs enries are removed. */
-	kgsl_process_private_get(private);
-
 	if (kobject_init_and_add(&private->kobj, &ktype_mem_entry,
 		kgsl_driver.prockobj, "%d", pid_nr(private->pid))) {
 		dev_err(device->dev, "Unable to add sysfs for process %d\n",
@@ -374,8 +383,14 @@ void kgsl_process_init_sysfs(struct kgsl_device *device,
 			WARN(1, "Couldn't create sysfs file '%s'\n",
 				memtypes[i].attr.name);
 	}
-}
 
+}
+#ifdef OPLUS_FEATURE_HEALTHINFO
+unsigned long gpu_total(void)
+{
+	return (unsigned long)atomic_long_read(&kgsl_driver.stats.page_alloc);
+}
+#endif /* OPLUS_FEATURE_HEALTHINFO */
 static ssize_t memstat_show(struct device *dev,
 			 struct device_attribute *attr, char *buf)
 {
@@ -472,12 +487,8 @@ static vm_fault_t kgsl_paged_vmfault(struct kgsl_memdesc *memdesc,
 				struct vm_fault *vmf)
 {
 	int pgoff;
-	unsigned int offset = vmf->address - vma->vm_start;
 
-	if (offset >= memdesc->size)
-		return VM_FAULT_SIGBUS;
-
-	pgoff = offset >> PAGE_SHIFT;
+	pgoff = (vmf->address - vma->vm_start) >> PAGE_SHIFT;
 
 	return vmf_insert_page(vma, vmf->address, memdesc->pages[pgoff]);
 }
@@ -900,7 +911,8 @@ void kgsl_get_memory_usage(char *name, size_t name_size, uint64_t memflags)
 {
 	unsigned int type = MEMFLAGS(memflags, KGSL_MEMTYPE_MASK,
 		KGSL_MEMTYPE_SHIFT);
-	int i;
+
+		int i;
 
 	for (i = 0; i < ARRAY_SIZE(memtypes); i++) {
 		if (memtypes[i].type == type) {
@@ -1088,7 +1100,7 @@ static int kgsl_system_alloc_pages(u64 size, struct page ***pages,
 	struct page **local;
 	int i, npages = size >> PAGE_SHIFT;
 
-	local = kvcalloc(npages, sizeof(*pages), GFP_KERNEL);
+	local = kvcalloc(npages, sizeof(*pages), GFP_KERNEL | __GFP_NORETRY);
 	if (!local)
 		return -ENOMEM;
 
@@ -1381,7 +1393,6 @@ kgsl_allocate_secure_global(struct kgsl_device *device,
 	 * normally
 	 */
 	kgsl_mmu_map_global(device, &md->memdesc, 0);
-	kgsl_trace_gpu_mem_total(device, md->memdesc.size);
 
 	return &md->memdesc;
 }
@@ -1421,7 +1432,6 @@ struct kgsl_memdesc *kgsl_allocate_global(struct kgsl_device *device,
 	list_add_tail(&md->node, &device->globals);
 
 	kgsl_mmu_map_global(device, &md->memdesc, padding);
-	kgsl_trace_gpu_mem_total(device, md->memdesc.size);
 
 	return &md->memdesc;
 }

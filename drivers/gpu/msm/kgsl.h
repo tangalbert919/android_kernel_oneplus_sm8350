@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2008-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2008-2020, The Linux Foundation. All rights reserved.
  */
 #ifndef __KGSL_H
 #define __KGSL_H
@@ -479,7 +479,7 @@ void kgsl_core_exit(void);
 static inline bool kgsl_gpuaddr_in_memdesc(const struct kgsl_memdesc *memdesc,
 				uint64_t gpuaddr, uint64_t size)
 {
-	if (IS_ERR_OR_NULL(memdesc))
+	if (!memdesc)
 		return false;
 
 	/* set a minimum size to search for */
@@ -563,6 +563,16 @@ kgsl_mem_entry_put(struct kgsl_mem_entry *entry)
 	if (entry)
 		kref_put(&entry->refcount, kgsl_mem_entry_destroy);
 }
+
+/**
+ * kgsl_mem_entry_put_deferred() - Puts refcount and triggers deferred
+ * mem_entry destroy when refcount is the last refcount.
+ * @entry: memory entry to be put.
+ *
+ * Use this to put a memory entry when we don't want to block
+ * the caller while destroying memory entry.
+ */
+void kgsl_mem_entry_put_deferred(struct kgsl_mem_entry *entry);
 
 /*
  * kgsl_addr_range_overlap() - Checks if 2 ranges overlap
