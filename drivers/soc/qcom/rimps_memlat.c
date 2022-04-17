@@ -102,8 +102,7 @@ struct core_dev_map {
 struct cpu_pmu_ctrs {
 	uint32_t ccntr_lo;
 	uint32_t ccntr_hi;
-	uint32_t evcntr[CONFIG_QTI_HW_NUM_PMU];
-	uint32_t amu_evcntr[CONFIG_QTI_HW_NUM_AMU * 2];
+	uint32_t evcntr[MAX_EVCNTRS];
 	uint32_t valid;
 	uint32_t unused0;
 };
@@ -207,12 +206,7 @@ static ssize_t store_##name(struct kobject *kobj,			\
 	unsigned int val;						\
 	struct memlat_mon *mon = to_memlat_mon(kobj);			\
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;			\
-	struct scmi_memlat_vendor_ops *ops = NULL;			\
-	if (cpu_grp && cpu_grp->handle &&				\
-			cpu_grp->handle->memlat_ops)			\
-		ops = cpu_grp->handle->memlat_ops;			\
-	else								\
-		return -ENODEV;						\
+	struct scmi_memlat_vendor_ops *ops = cpu_grp->handle->memlat_ops;	\
 	ret = kstrtouint(buf, 10, &val);				\
 	if (ret < 0)							\
 		return ret;						\
@@ -253,15 +247,9 @@ static ssize_t store_min_freq(struct kobject *kobj,
 	unsigned int val;
 	struct memlat_mon *mon = to_memlat_mon(kobj);
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;
-	struct scmi_memlat_vendor_ops *ops = NULL;
+	struct scmi_memlat_vendor_ops *ops = cpu_grp->handle->memlat_ops;
 	unsigned int min_freq;
 	unsigned int max_freq;
-
-	if (cpu_grp && cpu_grp->handle &&
-			cpu_grp->handle->memlat_ops)
-		ops = cpu_grp->handle->memlat_ops;
-	else
-		return -ENODEV;
 
 	if (mon->mon_type == L3_MEMLAT) {
 		min_freq = l3_freqs[0];
@@ -298,15 +286,9 @@ static ssize_t store_max_freq(struct kobject *kobj,
 	unsigned int val;
 	struct memlat_mon *mon = to_memlat_mon(kobj);
 	struct memlat_cpu_grp *cpu_grp = mon->cpu_grp;
-	struct scmi_memlat_vendor_ops *ops = NULL;
+	struct scmi_memlat_vendor_ops *ops = cpu_grp->handle->memlat_ops;
 	unsigned int min_freq;
 	unsigned int max_freq;
-
-	if (cpu_grp && cpu_grp->handle &&
-			cpu_grp->handle->memlat_ops)
-		ops = cpu_grp->handle->memlat_ops;
-	else
-		return -ENODEV;
 
 	if (mon->mon_type == L3_MEMLAT) {
 		min_freq = l3_freqs[0];

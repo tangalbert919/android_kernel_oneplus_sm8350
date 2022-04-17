@@ -79,6 +79,6 @@
 #define OBJECT_ERROR_KMEM        -97   /* kernel out of memory */
 #define OBJECT_ERROR_REMOTE      -98   /* local method sent to remote object */
 #define OBJECT_ERROR_BUSY        -99   /* Object is busy */
-#define Object_ERROR_TIMEOUT     -103  /* Call Back Object invocation timed out. */
+#define OBJECT_ERROR_TIMEOUT     -103  /* Call Back Object invocation timed out. */
 
 #endif /* __SMCINVOKE_OBJECT_H */
