@@ -168,28 +168,6 @@ static const struct chan_attr uci_chan_attr_table[] = {
 		true
 	},
 	{
-		MHI_CLIENT_DIAG_OUT,
-		TRB_MAX_DATA_SIZE,
-		MAX_NR_TRBS_PER_CHAN,
-		MHI_DIR_OUT,
-		NULL,
-		NULL,
-		NULL,
-		false,
-		true
-	},
-	{
-		MHI_CLIENT_DIAG_IN,
-		TRB_MAX_DATA_SIZE,
-		MAX_NR_TRBS_PER_CHAN,
-		MHI_DIR_IN,
-		NULL,
-		NULL,
-		NULL,
-		false,
-		true
-	},
-	{
 		MHI_CLIENT_QMI_OUT,
 		TRB_MAX_DATA_SIZE,
 		MAX_NR_TRBS_PER_CHAN,
@@ -301,9 +279,9 @@ static const struct chan_attr uci_chan_attr_table[] = {
 		mhi_uci_generic_client_cb,
 		NULL,
 		NULL,
+		NULL,
 		false,
-		true,
-		50
+		true
 	},
 	{
 		MHI_CLIENT_ADB_IN,
@@ -313,9 +291,9 @@ static const struct chan_attr uci_chan_attr_table[] = {
 		mhi_uci_generic_client_cb,
 		"android_adb",
 		NULL,
+		NULL,
 		false,
-		true,
-		50
+		false
 	},
 };
 
@@ -874,15 +852,6 @@ static int mhi_uci_read_async(struct uci_client *uci_handle, int *bytes_avail)
 	if (*bytes_avail < 0) {
 		uci_log(UCI_DBG_ERROR, "Failed to read channel ret %dlu\n",
 			*bytes_avail);
-		if (uci_handle->in_chan == MHI_CLIENT_ADB_OUT) {
-			uci_log(UCI_DBG_ERROR,
-				"Read failed CH 36 free req from list\n");
-			uci_handle->pkt_loc = NULL;
-			uci_handle->pkt_size = 0;
-			mhi_uci_put_req(uci_handle, ureq);
-			*bytes_avail = 0;
-			return ret_val;
-		}
 		mhi_uci_put_req(uci_handle, ureq);
 		return -EIO;
 	}
@@ -966,11 +935,8 @@ static int open_client_mhi_channels(struct uci_client *uci_client)
 {
 	int rc = 0;
 
-	if (!mhi_uci_are_channels_connected(uci_client)) {
-		uci_log(UCI_DBG_ERROR, "%s:Channels are not connected\n",
-			__func__);
+	if (!mhi_uci_are_channels_connected(uci_client))
 		return -ENODEV;
-	}
 
 	uci_log(UCI_DBG_DBG,
 			"Starting channels %d %d.\n",
@@ -1101,19 +1067,11 @@ static int mhi_uci_client_release(struct inode *mhi_inode,
 		struct file *file_handle)
 {
 	struct uci_client *uci_handle = file_handle->private_data;
-	const struct chan_attr *in_chan_attr;
-	int count = 0, i;
+	int count = 0;
 	struct mhi_req *ureq;
 
 	if (!uci_handle)
 		return -EINVAL;
-
-	in_chan_attr = uci_handle->in_chan_attr;
-	if (!in_chan_attr) {
-		uci_log(UCI_DBG_ERROR, "Null channel attributes for chan %d\n",
-				uci_handle->in_chan);
-		return -EINVAL;
-	}
 
 	if (atomic_sub_return(1, &uci_handle->ref_count)) {
 		uci_log(UCI_DBG_DBG, "Client close chan %d, ref count 0x%x\n",
@@ -1171,12 +1129,6 @@ static int mhi_uci_client_release(struct inode *mhi_inode,
 			uci_log(UCI_DBG_DBG,
 				"Client %d closed with %d transfers pending\n",
 				iminor(mhi_inode), count);
-	}
-
-	for (i = 0; i < (in_chan_attr->nr_trbs); i++) {
-		kfree(uci_handle->in_buf_list[i].addr);
-		uci_handle->in_buf_list[i].addr = NULL;
-		uci_handle->in_buf_list[i].buf_size = 0;
 	}
 
 	atomic_set(&uci_handle->read_data_ready, 0);
@@ -1295,12 +1247,6 @@ static int __mhi_uci_client_read(struct uci_client *uci_handle,
 	int ret_val = 0;
 
 	do {
-		if (!mhi_uci_are_channels_connected(uci_handle)) {
-			uci_log(UCI_DBG_ERROR,
-				"%s:Channels are not connected\n", __func__);
-			return -ENODEV;
-		}
-
 		if (!uci_handle->pkt_loc &&
 			!atomic_read(&uci_ctxt.mhi_disabled)) {
 			ret_val = uci_handle->read(uci_handle, bytes_avail);
@@ -1445,12 +1391,6 @@ static ssize_t mhi_uci_client_write(struct file *file,
 			"Client %d attempted to write while MHI is disabled\n",
 			uci_handle->out_chan);
 		return -EIO;
-	}
-
-	if (!mhi_uci_are_channels_connected(uci_handle)) {
-		uci_log(UCI_DBG_ERROR, "%s:Channels are not connected\n",
-			__func__);
-		return -ENODEV;
 	}
 
 	if (count > TRB_MAX_DATA_SIZE) {
@@ -1972,7 +1912,7 @@ static void mhi_uci_at_ctrl_tre_cb(struct mhi_dev_client_cb_reason *reason)
 static void mhi_uci_at_ctrl_client_cb(struct mhi_dev_client_cb_data *cb_data)
 {
 	struct uci_client *client = cb_data->user_data;
-	int rc, i;
+	int rc;
 	struct mhi_req *ureq;
 
 	uci_log(UCI_DBG_VERBOSE, " Rcvd MHI cb for channel %d, state %d\n",
@@ -2010,12 +1950,6 @@ static void mhi_uci_at_ctrl_client_cb(struct mhi_dev_client_cb_data *cb_data)
 			list_del_init(&ureq->list);
 			/* Add to in-use list */
 			list_add_tail(&ureq->list, &client->req_list);
-		}
-
-		for (i = 0; i < (client->in_chan_attr->nr_trbs); i++) {
-			kfree(client->in_buf_list[i].addr);
-			client->in_buf_list[i].addr = NULL;
-			client->in_buf_list[i].buf_size = 0;
 		}
 	}
 }

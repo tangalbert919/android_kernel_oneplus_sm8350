@@ -212,7 +212,7 @@ static int __mhi_download_rddm_in_panic(struct mhi_controller *mhi_cntrl)
 	enum mhi_ee ee;
 	const u32 delayms = 5;
 	u32 retry = (mhi_cntrl->timeout_ms) / delayms;
-	const u32 rddm_timeout_ms = 250;
+	const u32 rddm_timeout_ms = 200;
 	int rddm_retry = rddm_timeout_ms / delayms; /* time to enter rddm */
 	void __iomem *base = mhi_cntrl->bhie;
 
@@ -220,12 +220,6 @@ static int __mhi_download_rddm_in_panic(struct mhi_controller *mhi_cntrl)
 			to_mhi_pm_state_str(mhi_cntrl->pm_state),
 			TO_MHI_STATE_STR(mhi_cntrl->dev_state),
 			TO_MHI_EXEC_STR(mhi_cntrl->ee));
-
-	if (mhi_cntrl->ee == MHI_EE_PBL) {
-		MHI_CNTRL_LOG("Aborting RDDM dumps as device is in %s state\n",
-				 TO_MHI_EXEC_STR(mhi_cntrl->ee));
-		return -EACCES;
-	}
 
 	/*
 	 * This should only be executing during a kernel panic, we expect all

@@ -43,8 +43,6 @@
 #define CNSS_RAMDUMP_VERSION		0
 #define MAX_FIRMWARE_NAME_LEN		40
 #define FW_V2_NUMBER                    2
-#define POWER_ON_RETRY_MAX_TIMES        3
-#define POWER_ON_RETRY_DELAY_MS         200
 
 #define CNSS_EVENT_SYNC   BIT(0)
 #define CNSS_EVENT_UNINTERRUPTIBLE BIT(1)
@@ -56,7 +54,6 @@
 enum cnss_dev_bus_type {
 	CNSS_BUS_NONE = -1,
 	CNSS_BUS_PCI,
-	CNSS_BUS_USB,
 };
 
 struct cnss_vreg_cfg {
@@ -99,7 +96,6 @@ struct cnss_pinctrl_info {
 	struct pinctrl_state *wlan_en_sleep;
 	int bt_en_gpio;
 	int xo_clk_gpio; /*qca6490 only */
-	int sw_ctrl_gpio;
 };
 
 #if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART)
@@ -346,7 +342,7 @@ enum cnss_bdf_type {
 	CNSS_BDF_BIN,
 	CNSS_BDF_ELF,
 	CNSS_BDF_REGDB = 4,
-	CNSS_BDF_HDS = 6,
+	CNSS_BDF_DUMMY = 255,
 };
 
 enum cnss_cal_status {
@@ -398,7 +394,6 @@ enum cnss_ce_index {
 
 struct cnss_dms_data {
 	u32 mac_valid;
-	u8 nv_mac_not_prov;
 	u8 mac[QMI_WLFW_MAC_ADDR_SIZE_V01];
 };
 
@@ -408,8 +403,6 @@ enum cnss_timeout_type {
 	CNSS_TIMEOUT_IDLE_RESTART,
 	CNSS_TIMEOUT_CALIBRATION,
 	CNSS_TIMEOUT_WLAN_WATCHDOG,
-	CNSS_TIMEOUT_RDDM,
-	CNSS_TIMEOUT_RECOVERY,
 };
 
 struct cnss_plat_data {
@@ -439,7 +432,6 @@ struct cnss_plat_data {
 	enum cnss_driver_status driver_status;
 	u32 recovery_count;
 	u8 recovery_enabled;
-	u8 hds_enabled;
 	unsigned long driver_state;
 	struct list_head event_list;
 	spinlock_t event_lock; /* spinlock for driver work event handling */
@@ -452,7 +444,6 @@ struct cnss_plat_data {
 	struct wlfw_rf_board_info board_info;
 	struct wlfw_soc_info soc_info;
 	struct wlfw_fw_version_info fw_version_info;
-	struct cnss_dev_mem_info dev_mem_info[CNSS_MAX_DEV_MEM_NUM];
 	char fw_build_id[QMI_WLFW_MAX_BUILD_ID_LEN + 1];
 	u32 otp_version;
 	u32 fw_mem_seg_len;
@@ -502,10 +493,23 @@ struct cnss_plat_data {
 	struct cnss_dms_data dms;
 	int power_up_error;
 	u32 hw_trc_override;
-	u32 is_converged_dt;
-	struct device_node *dev_node;
-	u64 feature_list;
+    #ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+	unsigned long loadBdfState;
+	unsigned long loadRegdbState;
+    #endif
 };
+
+#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+enum cnss_load_state {
+	CNSS_LOAD_BDF_FAIL = 1,
+	CNSS_LOAD_BDF_SUCCESS,
+	CNSS_LOAD_REGDB_FAIL,
+	CNSS_LOAD_REGDB_SUCCESS,
+	CNSS_PROBE_FAIL,
+	CNSS_PROBE_SUCCESS,
+};
+
+#endif
 
 #ifdef CONFIG_ARCH_QCOM
 static inline u64 cnss_get_host_timestamp(struct cnss_plat_data *plat_priv)
@@ -546,7 +550,7 @@ void cnss_put_clk(struct cnss_plat_data *plat_priv);
 int cnss_vreg_unvote_type(struct cnss_plat_data *plat_priv,
 			  enum cnss_vreg_type type);
 int cnss_get_pinctrl(struct cnss_plat_data *plat_priv);
-int cnss_power_on_device(struct cnss_plat_data *plat_priv, bool reset);
+int cnss_power_on_device(struct cnss_plat_data *plat_priv);
 void cnss_power_off_device(struct cnss_plat_data *plat_priv);
 bool cnss_is_device_powered_on(struct cnss_plat_data *plat_priv);
 int cnss_register_subsys(struct cnss_plat_data *plat_priv);
@@ -570,14 +574,5 @@ int cnss_enable_int_pow_amp_vreg(struct cnss_plat_data *plat_priv);
 int cnss_get_tcs_info(struct cnss_plat_data *plat_priv);
 unsigned int cnss_get_timeout(struct cnss_plat_data *plat_priv,
 			      enum cnss_timeout_type);
-int cnss_dev_specific_power_on(struct cnss_plat_data *plat_priv);
-int cnss_request_firmware_direct(struct cnss_plat_data *plat_priv,
-				 const struct firmware **fw_entry,
-				 const char *filename);
-void cnss_disable_redundant_vreg(struct cnss_plat_data *plat_priv);
-int cnss_gpio_get_value(struct cnss_plat_data *plat_priv, int gpio_num);
-int cnss_set_feature_list(struct cnss_plat_data *plat_priv,
-			  enum cnss_feature_v01 feature);
-int cnss_get_feature_list(struct cnss_plat_data *plat_priv,
-			  u64 *feature_list);
+
 #endif /* _CNSS_MAIN_H */

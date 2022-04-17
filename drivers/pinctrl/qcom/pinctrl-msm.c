@@ -894,11 +894,11 @@ static void msm_gpio_irq_enable(struct irq_data *d)
 		irq_chip_enable_parent(d);
 	}
 
-	if (test_bit(d->hwirq, pctrl->skip_wake_irqs)) {
-		if (pctrl->mpm_wake_ctl)
-			msm_gpio_mpm_wake_set(d->hwirq, true);
+	if (pctrl->mpm_wake_ctl)
+		msm_gpio_mpm_wake_set(d->hwirq, true);
+
+	if (test_bit(d->hwirq, pctrl->skip_wake_irqs))
 		return;
-	}
 
 	msm_gpio_irq_clear_unmask(d, true);
 }
@@ -921,11 +921,11 @@ static void msm_gpio_irq_disable(struct irq_data *d)
 		irq_chip_disable_parent(d);
 	}
 
-	if (test_bit(d->hwirq, pctrl->skip_wake_irqs)) {
-		if (pctrl->mpm_wake_ctl)
-			msm_gpio_mpm_wake_set(d->hwirq, false);
+	if (pctrl->mpm_wake_ctl)
+		msm_gpio_mpm_wake_set(d->hwirq, false);
+
+	if (test_bit(d->hwirq, pctrl->skip_wake_irqs))
 		return;
-	}
 
 	msm_gpio_irq_mask(d);
 }
@@ -997,11 +997,10 @@ static void msm_dirconn_uncfg_reg(struct irq_data *d, u32 offset)
 	raw_spin_lock_irqsave(&pctrl->lock, flags);
 	g = &pctrl->soc->groups[d->hwirq];
 
-	writel_relaxed(val, pctrl->regs[g->tile] + g->dir_conn_reg
-		       + (offset * 4));
-	val = msm_readl_intr_cfg(pctrl, g);
+	writel_relaxed(val, pctrl->regs + g->dir_conn_reg + (offset * 4));
+	val = readl_relaxed(pctrl->regs + g->intr_cfg_reg);
 	val &= ~BIT(g->dir_conn_en_bit);
-	msm_writel_intr_cfg(val, pctrl, g);
+	writel_relaxed(val, pctrl->regs + g->intr_cfg_reg);
 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 }
 
@@ -1199,6 +1198,7 @@ static int msm_gpio_irq_set_wake(struct irq_data *d, unsigned int on)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+	unsigned long flags;
 
 	if (d->parent_data)
 		irq_chip_set_wake_parent(d, on);
@@ -1209,7 +1209,11 @@ static int msm_gpio_irq_set_wake(struct irq_data *d, unsigned int on)
 	 * when TLMM is powered on. To allow that, enable the GPIO
 	 * summary line to be wakeup capable at GIC.
 	 */
+	raw_spin_lock_irqsave(&pctrl->lock, flags);
+
 	irq_set_irq_wake(pctrl->irq, on);
+
+	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 
 	return 0;
 }
@@ -1280,14 +1284,9 @@ static int msm_gpio_wakeirq(struct gpio_chip *gc,
 	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
 	const struct msm_gpio_wakeirq_map *map;
 	int i;
-	bool skip;
 
 	*parent = GPIO_NO_WAKE_IRQ;
 	*parent_type = IRQ_TYPE_EDGE_RISING;
-
-	skip = irq_domain_qcom_handle_wakeup(gc->irq.parent_domain);
-	if (!test_bit(child, pctrl->skip_wake_irqs) && skip)
-		return 0;
 
 	for (i = 0; i < pctrl->soc->nwakeirq_map; i++) {
 		map = &pctrl->soc->wakeirq_map[i];
@@ -1358,16 +1357,6 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 		for (i = 0; skip && i < pctrl->soc->nwakeirq_map; i++) {
 			gpio = pctrl->soc->wakeirq_map[i].gpio;
 			set_bit(gpio, pctrl->skip_wake_irqs);
-		}
-
-		if (pctrl->soc->no_wake_gpios) {
-			for (i = 0; i < pctrl->soc->n_no_wake_gpios; i++) {
-				gpio = pctrl->soc->no_wake_gpios[i];
-				if (test_bit(gpio, pctrl->skip_wake_irqs)) {
-					clear_bit(gpio, pctrl->skip_wake_irqs);
-					msm_gpio_mpm_wake_set(gpio, false);
-				}
-			}
 		}
 	}
 
@@ -1608,6 +1597,12 @@ int msm_pinctrl_probe(struct platform_device *pdev,
 	}
 
 	platform_set_drvdata(pdev, pctrl);
+
+	#ifdef OPLUS_BUG_STABILITY
+	pr_err("Disable GPIO151 wakeup\n");
+
+	msm_gpio_mpm_wake_set(151, false);
+	#endif
 
 	dev_dbg(&pdev->dev, "Probed Qualcomm pinctrl driver\n");
 

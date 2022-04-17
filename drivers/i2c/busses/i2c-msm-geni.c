@@ -23,7 +23,6 @@
 #include <linux/ioctl.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/slab.h>
-#include <soc/qcom/boot_stats.h>
 
 #define SE_I2C_TX_TRANS_LEN		(0x26C)
 #define SE_I2C_RX_TRANS_LEN		(0x270)
@@ -1191,7 +1190,6 @@ static int geni_i2c_probe(struct platform_device *pdev)
 	struct platform_device *wrapper_pdev;
 	struct device_node *wrapper_ph_node;
 	int ret;
-	char boot_marker[40];
 
 	gi2c = devm_kzalloc(&pdev->dev, sizeof(*gi2c), GFP_KERNEL);
 	if (!gi2c)
@@ -1202,10 +1200,6 @@ static int geni_i2c_probe(struct platform_device *pdev)
 		gi2c_dev_dbg[arr_idx++] = gi2c;
 
 	gi2c->dev = &pdev->dev;
-
-	snprintf(boot_marker, sizeof(boot_marker),
-				"M - DRIVER GENI_I2C Init");
-	place_marker(boot_marker);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -1237,9 +1231,6 @@ static int geni_i2c_probe(struct platform_device *pdev)
 		dev_info(&pdev->dev, "LE-VM usecase\n");
 	}
 
-	gi2c->i2c_rsc.wrapper_dev = &wrapper_pdev->dev;
-	gi2c->i2c_rsc.ctrl_dev = gi2c->dev;
-
 	/*
 	 * For LE, clocks, gpio and icb voting will be provided by
 	 * by LA. The I2C operates in GSI mode only for LE usecase,
@@ -1247,6 +1238,8 @@ static int geni_i2c_probe(struct platform_device *pdev)
 	 * in I2C LE dt.
 	 */
 	if (!gi2c->is_le_vm) {
+		gi2c->i2c_rsc.wrapper_dev = &wrapper_pdev->dev;
+		gi2c->i2c_rsc.ctrl_dev = gi2c->dev;
 		gi2c->i2c_rsc.se_clk = devm_clk_get(&pdev->dev, "se-clk");
 		if (IS_ERR(gi2c->i2c_rsc.se_clk)) {
 			ret = PTR_ERR(gi2c->i2c_rsc.se_clk);
@@ -1362,10 +1355,6 @@ static int geni_i2c_probe(struct platform_device *pdev)
 		dev_err(gi2c->dev, "Add adapter failed, ret=%d\n", ret);
 		return ret;
 	}
-
-	snprintf(boot_marker, sizeof(boot_marker),
-				"M - DRIVER GENI_I2C_%d Ready", gi2c->adap.nr);
-	place_marker(boot_marker);
 
 	dev_info(gi2c->dev, "I2C probed\n");
 	return 0;

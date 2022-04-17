@@ -5,6 +5,11 @@
 #include <linux/module.h>
 #include <linux/soc/qcom/qmi.h>
 
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+#include <soc/oplus/system/oplus_project.h>
+#include <linux/fs.h>
+#endif
+
 #include "bus.h"
 #include "debug.h"
 #include "main.h"
@@ -23,14 +28,16 @@
 #define BIN_BDF_FILE_NAME_PREFIX	"bdwlan.b"
 #define BIN_BDF_FILE_NAME_GF_PREFIX	"bdwlang.b"
 #define REGDB_FILE_NAME			"regdb.bin"
-#define HDS_FILE_NAME			"hds.bin"
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+#define REGDBW_FILE_NAME                "regdbw.bin"
+#endif
+#define DUMMY_BDF_FILE_NAME		"bdwlan.dmy"
 #define CHIP_ID_GF_MASK			0x10
 
 #define QDSS_TRACE_CONFIG_FILE		"qdss_trace_config"
 #define DEBUG_STR			"debug"
 #define HW_V1_NUMBER			"v1"
 #define HW_V2_NUMBER			"v2"
-#define CE_MSI_NAME			"CE"
 
 #define QMI_WLFW_TIMEOUT_MS		(plat_priv->ctrl_params.qmi_timeout)
 #define QMI_WLFW_TIMEOUT_JF		msecs_to_jiffies(QMI_WLFW_TIMEOUT_MS)
@@ -40,10 +47,14 @@
 #define QMI_WLFW_MAX_RECV_BUF_SIZE	SZ_8K
 #define IMSPRIVATE_SERVICE_MAX_MSG_LEN	SZ_8K
 #define DMS_QMI_MAX_MSG_LEN		SZ_256
-#define DMS_MAC_NOT_PROVISIONED		16
 
 #define QMI_WLFW_MAC_READY_TIMEOUT_MS	50
 #define QMI_WLFW_MAC_READY_MAX_RETRY	200
+
+#ifdef CONFIG_OPLUS_FEATURE_WIFI_BDF
+#define ELF_BDF_FILE_NAME_WCN           "bdwlanw.elf"
+#define CHIP_ID_WCN6856                 0x2
+#endif
 
 #ifdef CONFIG_CNSS2_DEBUG
 static bool ignore_qmi_failure;
@@ -186,7 +197,6 @@ static int cnss_wlfw_host_cap_send_sync(struct cnss_plat_data *plat_priv)
 	int ret = 0;
 	u64 iova_start = 0, iova_size = 0,
 	    iova_ipa_start = 0, iova_ipa_size = 0;
-	u64 feature_list = 0;
 
 	cnss_pr_dbg("Sending host capability message, state: 0x%lx\n",
 		    plat_priv->driver_state);
@@ -228,8 +238,7 @@ static int cnss_wlfw_host_cap_send_sync(struct cnss_plat_data *plat_priv)
 	req->cal_done = plat_priv->cal_done;
 	cnss_pr_dbg("Calibration done is %d\n", plat_priv->cal_done);
 
-	if (cnss_bus_is_smmu_s1_enabled(plat_priv) &&
-	    !cnss_bus_get_iova(plat_priv, &iova_start, &iova_size) &&
+	if (!cnss_bus_get_iova(plat_priv, &iova_start, &iova_size) &&
 	    !cnss_bus_get_iova_ipa(plat_priv, &iova_ipa_start,
 				   &iova_ipa_size)) {
 		req->ddr_range_valid = 1;
@@ -241,14 +250,6 @@ static int cnss_wlfw_host_cap_send_sync(struct cnss_plat_data *plat_priv)
 
 	req->host_build_type_valid = 1;
 	req->host_build_type = cnss_get_host_build_type();
-
-	ret = cnss_get_feature_list(plat_priv, &feature_list);
-	if (!ret) {
-		req->feature_list_valid = 1;
-		req->feature_list = feature_list;
-		cnss_pr_dbg("Sending feature list 0x%llx\n",
-			    req->feature_list);
-	}
 
 	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
 			   wlfw_host_cap_resp_msg_v01_ei, resp);
@@ -389,7 +390,7 @@ int cnss_wlfw_tgt_cap_send_sync(struct cnss_plat_data *plat_priv)
 	struct wlfw_cap_resp_msg_v01 *resp;
 	struct qmi_txn txn;
 	char *fw_build_timestamp;
-	int ret = 0, i;
+	int ret = 0;
 
 	cnss_pr_dbg("Sending target capability message, state: 0x%lx\n",
 		    plat_priv->driver_state);
@@ -474,17 +475,7 @@ int cnss_wlfw_tgt_cap_send_sync(struct cnss_plat_data *plat_priv)
 	}
 	if (resp->otp_version_valid)
 		plat_priv->otp_version = resp->otp_version;
-	if (resp->dev_mem_info_valid) {
-		for (i = 0; i < QMI_WLFW_MAX_DEV_MEM_NUM_V01; i++) {
-			plat_priv->dev_mem_info[i].start =
-				resp->dev_mem_info[i].start;
-			plat_priv->dev_mem_info[i].size =
-				resp->dev_mem_info[i].size;
-			cnss_pr_buf("Device memory info[%d]: start = 0x%llx, size = 0x%llx\n",
-				    i, plat_priv->dev_mem_info[i].start,
-				    plat_priv->dev_mem_info[i].size);
-		}
-	}
+
 	if (resp->fw_caps_valid)
 		plat_priv->fw_pcie_gen_switch =
 			!!(resp->fw_caps & QMI_WLFW_HOST_PCIE_GEN_SWITCH_V01);
@@ -510,6 +501,24 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_OPLUS_FEATURE_WIFI_BDF
+static void cnss_get_oplus_bdf_file_name(struct cnss_plat_data *plat_priv,
+					 char *file_name, u32 filename_len)
+{
+	cnss_pr_dbg("wcn chip id: %x", plat_priv->chip_info.chip_id);
+
+	if (plat_priv->chip_info.chip_id & CHIP_ID_WCN6856) {
+		if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK) {
+			snprintf(file_name, filename_len, ELF_BDF_FILE_NAME_GF);
+		} else {
+			snprintf(file_name, filename_len, ELF_BDF_FILE_NAME_WCN);
+		}
+	} else {
+		snprintf(file_name, filename_len, ELF_BDF_FILE_NAME);
+	}
+}
+#endif
+
 static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 				  u32 bdf_type, char *filename,
 				  u32 filename_len)
@@ -521,12 +530,16 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 	case CNSS_BDF_ELF:
 		/* Board ID will be equal or less than 0xFF in GF mask case */
 		if (plat_priv->board_info.board_id == 0xFF) {
+#ifndef CONFIG_OPLUS_FEATURE_WIFI_BDF
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
 				snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME_GF);
 			else
 				snprintf(filename_tmp, filename_len,
 					 ELF_BDF_FILE_NAME);
+#else
+			cnss_get_oplus_bdf_file_name(plat_priv, filename_tmp, filename_len);
+#endif
 		} else if (plat_priv->board_info.board_id < 0xFF) {
 			if (plat_priv->chip_info.chip_id & CHIP_ID_GF_MASK)
 				snprintf(filename_tmp, filename_len,
@@ -568,10 +581,18 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 		}
 		break;
 	case CNSS_BDF_REGDB:
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+		if (plat_priv->chip_info.chip_id & CHIP_ID_WCN6856)
+			snprintf(filename_tmp, filename_len, REGDBW_FILE_NAME);
+		else
+			snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
+#endif
 		snprintf(filename_tmp, filename_len, REGDB_FILE_NAME);
 		break;
-	case CNSS_BDF_HDS:
-		snprintf(filename_tmp, filename_len, HDS_FILE_NAME);
+	case CNSS_BDF_DUMMY:
+		cnss_pr_dbg("CNSS_BDF_DUMMY is set, sending dummy BDF\n");
+		snprintf(filename_tmp, filename_len, DUMMY_BDF_FILE_NAME);
+		ret = MAX_FIRMWARE_NAME_LEN;
 		break;
 	default:
 		cnss_pr_err("Invalid BDF type: %d\n",
@@ -580,11 +601,43 @@ static int cnss_get_bdf_file_name(struct cnss_plat_data *plat_priv,
 		break;
 	}
 
-	if (!ret)
+	if (ret >= 0)
 		cnss_bus_add_fw_prefix_name(plat_priv, filename, filename_tmp);
 
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+int check_bdf_size(unsigned int download_bdf_size, char* bdf_file_name) {
+	char str[48];
+	struct kstat* stat = NULL;
+	int ret = 0;
+
+	snprintf(str, sizeof(str), "%s%s", "/odm/etc/wifi/", bdf_file_name);
+	cnss_pr_dbg("vendor file name: %s", str);
+	stat = (struct kstat*) kzalloc(sizeof(struct kstat), GFP_KERNEL);
+	if (!stat)
+		return -ENOMEM;
+
+	ret = vfs_stat(str, stat);
+	if (ret < 0) {
+		cnss_pr_dbg("stat: %s fail %d", str, ret);
+		if (-ENOENT == ret) {
+			ret = 0;
+		}
+		goto out;
+	}
+
+	cnss_pr_dbg("dl size: %d, stat size: %d", download_bdf_size, stat->size);
+	if (download_bdf_size < stat->size) {
+		ret = -1;
+	}
+
+out:
+	kfree(stat);
+	return ret;
+}
+#endif
 
 int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 				 u32 bdf_type)
@@ -595,8 +648,11 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 	char filename[MAX_FIRMWARE_NAME_LEN];
 	const struct firmware *fw_entry = NULL;
 	const u8 *temp;
-	u32 remaining;
+	unsigned int remaining;
 	int ret = 0;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+	int loading_bdf_retry_cnt = 5;
+#endif
 
 	cnss_pr_dbg("Sending BDF download message, state: 0x%lx, type: %d\n",
 		    plat_priv->driver_state, bdf_type);
@@ -613,31 +669,51 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 
 	ret = cnss_get_bdf_file_name(plat_priv, bdf_type,
 				     filename, sizeof(filename));
-	if (ret)
+	if (ret > 0) {
+		temp = DUMMY_BDF_FILE_NAME;
+		remaining = MAX_FIRMWARE_NAME_LEN;
+		goto bypass_bdf;
+	} else if (ret < 0) {
 		goto err_req_fw;
+	}
 
-	if (bdf_type == CNSS_BDF_REGDB)
-		ret = cnss_request_firmware_direct(plat_priv, &fw_entry,
-						   filename);
-	else
-		ret = firmware_request_nowarn(&fw_entry, filename,
-					      &plat_priv->plat_dev->dev);
-
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+request_bdf:
+	ret = request_firmware_no_cache(&fw_entry, filename, &plat_priv->plat_dev->dev);
+#else
+	ret = request_firmware(&fw_entry, filename, &plat_priv->plat_dev->dev);
+#endif
 	if (ret) {
-		cnss_pr_err("Failed to load BDF: %s, ret: %d\n", filename, ret);
+		cnss_pr_err("Failed to load BDF: %s\n", filename);
 		goto err_req_fw;
 	}
 
 	temp = fw_entry->data;
+	remaining = fw_entry->size;
 
-	/* Check if firmware image size is within expected range */
-	if (fw_entry->size > U32_MAX)
-		goto err_send;
-
-	/* Typecast to match with interface defintition */
-	remaining = (u32)fw_entry->size;
+bypass_bdf:
+    #ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+	if (bdf_type == CNSS_BDF_REGDB) {
+		set_bit(CNSS_LOAD_REGDB_SUCCESS, &plat_priv->loadRegdbState);
+	} else if (bdf_type == CNSS_BDF_ELF){
+		set_bit(CNSS_LOAD_BDF_SUCCESS, &plat_priv->loadBdfState);
+	}
+    #endif
 
 	cnss_pr_dbg("Downloading BDF: %s, size: %u\n", filename, remaining);
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_BDF)
+	if (strncmp(filename, "bdwlan", 6) == 0
+		&& check_bdf_size(remaining, filename) && loading_bdf_retry_cnt > 0) {
+		loading_bdf_retry_cnt -= 1;
+		cnss_pr_dbg("bdf size is too small, maybe bdf is under transfer, retry loading..");
+		// sleep 400 ms
+		msleep_interruptible(400);
+		goto request_bdf;
+	}
+	// reset counter
+	loading_bdf_retry_cnt = 5;
+#endif
 
 	while (remaining) {
 		req->valid = 1;
@@ -699,7 +775,8 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 		req->seg_id++;
 	}
 
-	release_firmware(fw_entry);
+	if (bdf_type != CNSS_BDF_DUMMY)
+		release_firmware(fw_entry);
 
 	/* QCA6490 enable S3E regulator for IPA configuration only */
 	if (resp->host_bdf_data_valid) {
@@ -712,8 +789,16 @@ int cnss_wlfw_bdf_dnld_send_sync(struct cnss_plat_data *plat_priv,
 	return 0;
 
 err_send:
-	release_firmware(fw_entry);
+	if (bdf_type != CNSS_BDF_DUMMY)
+		release_firmware(fw_entry);
 err_req_fw:
+#ifdef OPLUS_FEATURE_WIFI_DCS_SWITCH
+	if (bdf_type == CNSS_BDF_REGDB) {
+		set_bit(CNSS_LOAD_REGDB_FAIL, &plat_priv->loadRegdbState);
+	} else if (bdf_type == CNSS_BDF_ELF){
+		set_bit(CNSS_LOAD_BDF_FAIL, &plat_priv->loadBdfState);
+	}
+#endif
 	if (!(bdf_type == CNSS_BDF_REGDB ||
 	      test_bit(CNSS_IN_REBOOT, &plat_priv->driver_state) ||
 	      ret == -EAGAIN))
@@ -807,6 +892,10 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 	struct wlfw_mac_addr_resp_msg_v01 resp = {0};
 	struct qmi_txn txn;
 	int ret;
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_MAC)
+	int i;
+	char revert_mac[QMI_WLFW_MAC_ADDR_SIZE_V01];
+#endif
 
 	if (!plat_priv || !mac || mac_len != QMI_WLFW_MAC_ADDR_SIZE_V01)
 		return -EINVAL;
@@ -822,7 +911,17 @@ int cnss_wlfw_wlan_mac_req_send_sync(struct cnss_plat_data *plat_priv,
 
 		cnss_pr_dbg("Sending WLAN mac req [%pM], state: 0x%lx\n",
 			    mac, plat_priv->driver_state);
+
+#if IS_ENABLED(CONFIG_OPLUS_FEATURE_WIFI_MAC)
+	for (i = 0; i < QMI_WLFW_MAC_ADDR_SIZE_V01 ; i ++){
+		revert_mac[i] = mac[QMI_WLFW_MAC_ADDR_SIZE_V01 - i -1];
+	}
+		cnss_pr_dbg("Sending revert WLAN mac req [%pM], state: 0x%lx\n",
+			    revert_mac, plat_priv->driver_state);
+	memcpy(req.mac_addr, revert_mac, mac_len);
+#else
 	memcpy(req.mac_addr, mac, mac_len);
+#endif
 	req.mac_addr_valid = 1;
 
 	ret = qmi_send_request(&plat_priv->qmi_wlfw, NULL, &txn,
@@ -860,7 +959,7 @@ int cnss_wlfw_qdss_data_send_sync(struct cnss_plat_data *plat_priv, char *file_n
 	struct wlfw_qdss_trace_data_req_msg_v01 *req;
 	struct wlfw_qdss_trace_data_resp_msg_v01 *resp;
 	unsigned char *p_qdss_trace_data_temp, *p_qdss_trace_data = NULL;
-	u32 remaining;
+	unsigned int remaining;
 	struct qmi_txn txn;
 
 	cnss_pr_dbg("%s\n", __func__);
@@ -1017,7 +1116,7 @@ int cnss_wlfw_qdss_dnld_send_sync(struct cnss_plat_data *plat_priv)
 	const struct firmware *fw_entry = NULL;
 	const u8 *temp;
 	char qdss_cfg_filename[MAX_FIRMWARE_NAME_LEN];
-	u32 remaining;
+	unsigned int remaining;
 	int ret = 0;
 
 	cnss_pr_dbg("Sending QDSS config download message, state: 0x%lx\n",
@@ -1034,8 +1133,8 @@ int cnss_wlfw_qdss_dnld_send_sync(struct cnss_plat_data *plat_priv)
 	}
 
 	cnss_get_qdss_cfg_filename(plat_priv, qdss_cfg_filename, sizeof(qdss_cfg_filename));
-	ret = cnss_request_firmware_direct(plat_priv, &fw_entry,
-					   qdss_cfg_filename);
+	ret = request_firmware(&fw_entry, qdss_cfg_filename,
+			       &plat_priv->plat_dev->dev);
 	if (ret) {
 		cnss_pr_err("Failed to load QDSS: %s\n",
 			    qdss_cfg_filename);
@@ -1043,13 +1142,7 @@ int cnss_wlfw_qdss_dnld_send_sync(struct cnss_plat_data *plat_priv)
 	}
 
 	temp = fw_entry->data;
-
-	/* Check if firmware image size is within expected range */
-	if (fw_entry->size > U32_MAX)
-		goto err_send;
-
-	/* Typecast to match with interface definition */
-	remaining = (u32)fw_entry->size;
+	remaining = fw_entry->size;
 
 	cnss_pr_dbg("Downloading QDSS: %s, size: %u\n",
 		    qdss_cfg_filename, remaining);
@@ -1307,7 +1400,7 @@ int cnss_wlfw_wlan_cfg_send_sync(struct cnss_plat_data *plat_priv,
 	struct wlfw_wlan_cfg_req_msg_v01 *req;
 	struct wlfw_wlan_cfg_resp_msg_v01 *resp;
 	struct qmi_txn txn;
-	u32 i, ce_id, num_vectors, user_base_data, base_vector;
+	u32 i;
 	int ret = 0;
 
 	if (!plat_priv)
@@ -1353,17 +1446,7 @@ int cnss_wlfw_wlan_cfg_send_sync(struct cnss_plat_data *plat_priv,
 		req->svc_cfg[i].pipe_dir = config->ce_svc_cfg[i].pipe_dir;
 		req->svc_cfg[i].pipe_num = config->ce_svc_cfg[i].pipe_num;
 	}
-	if (config->num_shadow_reg_cfg) {
-		req->shadow_reg_valid = 1;
-		if (config->num_shadow_reg_cfg >
-		    QMI_WLFW_MAX_NUM_SHADOW_REG_V01)
-			req->shadow_reg_len = QMI_WLFW_MAX_NUM_SHADOW_REG_V01;
-		else
-			req->shadow_reg_len = config->num_shadow_reg_cfg;
-		memcpy(req->shadow_reg, config->shadow_reg_cfg,
-		       sizeof(struct wlfw_shadow_reg_cfg_s_v01)
-		       * req->shadow_reg_len);
-	}
+
 	req->shadow_reg_v2_valid = 1;
 	if (config->num_shadow_reg_v2_cfg >
 	    QMI_WLFW_MAX_NUM_SHADOW_REG_V2_V01)
@@ -1374,30 +1457,6 @@ int cnss_wlfw_wlan_cfg_send_sync(struct cnss_plat_data *plat_priv,
 	memcpy(req->shadow_reg_v2, config->shadow_reg_v2_cfg,
 	       sizeof(struct wlfw_shadow_reg_v2_cfg_s_v01)
 	       * req->shadow_reg_v2_len);
-	if (config->rri_over_ddr_cfg_valid) {
-		req->rri_over_ddr_cfg_valid = 1;
-		req->rri_over_ddr_cfg.base_addr_low =
-			config->rri_over_ddr_cfg.base_addr_low;
-		req->rri_over_ddr_cfg.base_addr_high =
-			config->rri_over_ddr_cfg.base_addr_high;
-	}
-	if (config->send_msi_ce) {
-		ret = cnss_bus_get_msi_assignment(plat_priv,
-						  CE_MSI_NAME,
-						  &num_vectors,
-						  &user_base_data,
-						  &base_vector);
-		if (!ret) {
-			req->msi_cfg_valid = 1;
-			req->msi_cfg_len = QMI_WLFW_MAX_NUM_CE_V01;
-			for (ce_id = 0; ce_id < QMI_WLFW_MAX_NUM_CE_V01;
-				ce_id++) {
-				req->msi_cfg[ce_id].ce_id = ce_id;
-				req->msi_cfg[ce_id].msi_vector =
-					(ce_id % num_vectors) + base_vector;
-			}
-		}
-	}
 
 	ret = qmi_txn_init(&plat_priv->qmi_wlfw, &txn,
 			   wlfw_wlan_cfg_resp_msg_v01_ei, resp);
@@ -2898,7 +2957,7 @@ int cnss_qmi_get_dms_mac(struct cnss_plat_data *plat_priv)
 
 	if  (!test_bit(CNSS_QMI_DMS_CONNECTED, &plat_priv->driver_state)) {
 		cnss_pr_err("DMS QMI connection not established\n");
-		return -EAGAIN;
+		return -EINVAL;
 	}
 	cnss_pr_dbg("Requesting DMS MAC address");
 
@@ -2929,13 +2988,8 @@ int cnss_qmi_get_dms_mac(struct cnss_plat_data *plat_priv)
 	}
 
 	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
-		if (resp.resp.error == DMS_MAC_NOT_PROVISIONED) {
-			cnss_pr_err("NV MAC address is not provisioned");
-			plat_priv->dms.nv_mac_not_prov = 1;
-		} else {
-			cnss_pr_err("QMI_DMS_GET_MAC_ADDRESS_REQ_V01 failed, result: %d, err: %d\n",
-				    resp.resp.result, resp.resp.error);
-		}
+		cnss_pr_err("QMI_DMS_GET_MAC_ADDRESS_REQ_V01 failed, result: %d, err: %d\n",
+			    resp.resp.result, resp.resp.error);
 		ret = -resp.resp.result;
 		goto out;
 	}

@@ -1857,7 +1857,8 @@ static const struct msm_pinctrl_soc_data yupik_pinctrl = {
 /* By default, all the gpios that are mpm wake capable are enabled.
  * The following list disables the gpios explicitly
  */
-static const unsigned int config_mpm_wake_disable_gpios[] = { 127 };
+static const unsigned int config_mpm_wake_disable_gpios[] = {
+};
 
 static void yupik_pinctrl_config_mpm_wake_disable_gpios(void)
 {

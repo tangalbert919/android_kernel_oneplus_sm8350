@@ -4,12 +4,12 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/regulator/consumer.h>
 #if IS_ENABLED(CONFIG_QCOM_COMMAND_DB)
 #include <soc/qcom/cmd-db.h>
 #endif
+#include <linux/of_gpio.h>
 
 #include "main.h"
 #include "debug.h"
@@ -54,13 +54,11 @@ static struct cnss_clk_cfg cnss_clk_list[] = {
 #define WLAN_EN_GPIO			"wlan-en-gpio"
 #define BT_EN_GPIO			"qcom,bt-en-gpio"
 #define XO_CLK_GPIO			"qcom,xo-clk-gpio"
-#define SW_CTRL_GPIO			"qcom,sw-ctrl-gpio"
 #define WLAN_EN_ACTIVE			"wlan_en_active"
 #define WLAN_EN_SLEEP			"wlan_en_sleep"
-#define WLAN_VREGS_PROP			"wlan_vregs"
 
 #define BOOTSTRAP_DELAY			1000
-#define WLAN_ENABLE_DELAY		10000
+#define WLAN_ENABLE_DELAY		1000
 
 #define TCS_CMD_DATA_ADDR_OFFSET	0x4
 #define TCS_OFFSET			0xC8
@@ -99,7 +97,7 @@ static int cnss_get_vreg_single(struct cnss_plat_data *plat_priv,
 	snprintf(prop_name, MAX_PROP_SIZE, "qcom,%s-config",
 		 vreg->cfg.name);
 
-	prop = of_get_property(plat_priv->dev_node, prop_name, &len);
+	prop = of_get_property(dev->of_node, prop_name, &len);
 	if (!prop || len != (5 * sizeof(__be32))) {
 		cnss_pr_dbg("Property %s %s, use default\n", prop_name,
 			    prop ? "invalid format" : "doesn't exist");
@@ -271,51 +269,18 @@ static int cnss_get_vreg(struct cnss_plat_data *plat_priv,
 	int i;
 	struct cnss_vreg_info *vreg;
 	struct device *dev = &plat_priv->plat_dev->dev;
-	int id_n;
 
-	if (!list_empty(&plat_priv->vreg_list) &&
-	    !plat_priv->is_converged_dt) {
+	if (!list_empty(vreg_list)) {
 		cnss_pr_dbg("Vregs have already been updated\n");
 		return 0;
 	}
 
-	if (plat_priv->is_converged_dt) {
-		id_n = of_property_count_strings(plat_priv->dev_node,
-						 WLAN_VREGS_PROP);
-		if (id_n <= 0) {
-			if (id_n == -ENODATA) {
-				cnss_pr_dbg("No additional vregs for: %s:%lx\n",
-					    plat_priv->dev_node->name,
-					    plat_priv->device_id);
-				return 0;
-			}
-
-			cnss_pr_err("property %s is invalid or missed: %s:%lx\n",
-				    WLAN_VREGS_PROP, plat_priv->dev_node->name,
-				    plat_priv->device_id);
-			return -EINVAL;
-		}
-	} else {
-		id_n = vreg_list_size;
-	}
-
-	for (i = 0; i < id_n; i++) {
+	for (i = 0; i < vreg_list_size; i++) {
 		vreg = devm_kzalloc(dev, sizeof(*vreg), GFP_KERNEL);
 		if (!vreg)
 			return -ENOMEM;
 
-		if (plat_priv->is_converged_dt) {
-			ret = of_property_read_string_index(plat_priv->dev_node,
-							    WLAN_VREGS_PROP, i,
-							    &vreg->cfg.name);
-			if (ret) {
-				cnss_pr_err("Failed to read vreg ids\n");
-				return ret;
-			}
-		} else {
-			memcpy(&vreg->cfg, &vreg_cfg[i], sizeof(vreg->cfg));
-		}
-
+		memcpy(&vreg->cfg, &vreg_cfg[i], sizeof(vreg->cfg));
 		ret = cnss_get_vreg_single(plat_priv, vreg);
 		if (ret != 0) {
 			if (ret == -ENODEV) {
@@ -490,27 +455,6 @@ int cnss_vreg_unvote_type(struct cnss_plat_data *plat_priv,
 	}
 
 	return ret;
-}
-
-void cnss_disable_redundant_vreg(struct cnss_plat_data *plat_priv)
-{
-	struct cnss_vreg_info *vreg, *vreg_tmp;
-	struct list_head *vreg_list = &plat_priv->vreg_list;
-
-	list_for_each_entry_safe(vreg, vreg_tmp, vreg_list, list) {
-		if (IS_ERR_OR_NULL(vreg->reg))
-			continue;
-
-		if ((!strcmp("wlan-ant-switch", vreg->cfg.name) ||
-		     !strcmp("vdd-wlan-aon", vreg->cfg.name)) &&
-		    vreg->enabled) {
-			cnss_pr_dbg("Disable Regulator %s\n", vreg->cfg.name);
-
-			list_del(&vreg->list);
-			cnss_vreg_off_single(vreg);
-			cnss_put_vreg_single(plat_priv, vreg);
-		}
-	}
 }
 
 static int cnss_get_clk_single(struct cnss_plat_data *plat_priv,
@@ -784,21 +728,9 @@ int cnss_get_pinctrl(struct cnss_plat_data *plat_priv)
 							      XO_CLK_GPIO, 0);
 		cnss_pr_dbg("QCA6490 XO_CLK GPIO: %d\n",
 			    pinctrl_info->xo_clk_gpio);
-		cnss_set_feature_list(plat_priv, BOOTSTRAP_CLOCK_SELECT_V01);
 	} else {
 		pinctrl_info->xo_clk_gpio = -EINVAL;
 	}
-
-	if (of_find_property(dev->of_node, SW_CTRL_GPIO, NULL)) {
-		pinctrl_info->sw_ctrl_gpio = of_get_named_gpio(dev->of_node,
-							       SW_CTRL_GPIO,
-							       0);
-		cnss_pr_dbg("Switch control GPIO: %d\n",
-			    pinctrl_info->sw_ctrl_gpio);
-	} else {
-		pinctrl_info->sw_ctrl_gpio = -EINVAL;
-	}
-
 	return 0;
 out:
 	return ret;
@@ -877,13 +809,7 @@ static int cnss_select_pinctrl_state(struct cnss_plat_data *plat_priv,
 					    ret);
 				goto out;
 			}
-			/* As spec shown, it needs at least 4ms delay
-			 * between wlan_en become active and pcie reset
-			 * de-assert for qca6390. And it needs at least
-			 * 10ms for qca6174. So add 10ms-11ms delay here.
-			 */
-			usleep_range(WLAN_ENABLE_DELAY,
-				     WLAN_ENABLE_DELAY + 1000);
+			udelay(WLAN_ENABLE_DELAY);
 		}
 		cnss_set_xo_clk_gpio_state(plat_priv, false);
 	} else {
@@ -910,7 +836,7 @@ out:
  * cnss_select_pinctrl_enable - select WLAN_GPIO for Active pinctrl status
  * @plat_priv: Platform private data structure pointer
  *
- * For QCA6390/QCA6490, PMU requires minimum 100ms delay between BT_EN_GPIO off and
+ * For QCA6490, PMU requires minimum 100ms delay between BT_EN_GPIO off and
  * WLAN_EN_GPIO on. This is done to avoid power up issues.
  *
  * Return: Status of pinctrl select operation. 0 - Success.
@@ -920,16 +846,8 @@ static int cnss_select_pinctrl_enable(struct cnss_plat_data *plat_priv)
 	int ret = 0, bt_en_gpio = plat_priv->pinctrl_info.bt_en_gpio;
 	u8 wlan_en_state = 0;
 
-	if (bt_en_gpio < 0)
+	if (bt_en_gpio < 0 || plat_priv->device_id != QCA6490_DEVICE_ID)
 		goto set_wlan_en;
-
-	switch (plat_priv->device_id) {
-	case QCA6390_DEVICE_ID:
-	case QCA6490_DEVICE_ID:
-		break;
-	default:
-		goto set_wlan_en;
-	}
 
 	if (gpio_get_value(bt_en_gpio)) {
 		cnss_pr_dbg("BT_EN_GPIO State: On\n");
@@ -946,7 +864,7 @@ static int cnss_select_pinctrl_enable(struct cnss_plat_data *plat_priv)
 			cnss_select_pinctrl_state(plat_priv, false);
 			wlan_en_state = 0;
 		}
-		/* 100 ms delay for BT_EN and WLAN_EN QCA6490/QCA6390 PMU sequencing */
+		/* 100 ms delay for BT_EN and WLAN_EN QCA6490 PMU sequencing */
 		msleep(100);
 	}
 set_wlan_en:
@@ -955,24 +873,7 @@ set_wlan_en:
 	return ret;
 }
 
-int cnss_gpio_get_value(struct cnss_plat_data *plat_priv, int gpio_num)
-{
-	int ret;
-
-	if (gpio_num < 0)
-		return -EINVAL;
-
-	ret = gpio_direction_input(gpio_num);
-	if (ret) {
-		cnss_pr_err("Failed to set direction of GPIO(%d), err = %d",
-			    gpio_num, ret);
-		return -EINVAL;
-	}
-
-	return gpio_get_value(gpio_num);
-}
-
-int cnss_power_on_device(struct cnss_plat_data *plat_priv, bool reset)
+int cnss_power_on_device(struct cnss_plat_data *plat_priv)
 {
 	int ret = 0;
 
@@ -991,23 +892,6 @@ int cnss_power_on_device(struct cnss_plat_data *plat_priv, bool reset)
 	if (ret) {
 		cnss_pr_err("Failed to turn on clocks, err = %d\n", ret);
 		goto vreg_off;
-	}
-	if (reset) {
-		/* The default state of wlan_en maybe not low,
-		 * according to datasheet, we should put wlan_en
-		 * to low first, and trigger high.
-		 * And the default delay for qca6390 is at least 4ms,
-		 * for qcn7605/qca6174, it is 10us. For safe, set 5ms delay
-		 * here.
-		 */
-		ret = cnss_select_pinctrl_state(plat_priv, false);
-		if (ret) {
-			cnss_pr_err("Failed to select pinctrl state, err = %d\n",
-				    ret);
-			goto clk_off;
-		}
-
-		usleep_range(4000, 5000);
 	}
 
 	ret = cnss_select_pinctrl_enable(plat_priv);
@@ -1253,19 +1137,4 @@ int cnss_enable_int_pow_amp_vreg(struct cnss_plat_data *plat_priv)
 	data_val = readl_relaxed(tcs_cmd);
 	cnss_pr_dbg("Setup S3E TCS Addr: %x Data: %d\n", addr_val, data_val);
 	return 0;
-}
-
-int cnss_dev_specific_power_on(struct cnss_plat_data *plat_priv)
-{
-	int ret;
-
-	if (!plat_priv->is_converged_dt)
-		return 0;
-
-	ret = cnss_get_vreg_type(plat_priv, CNSS_VREG_PRIM);
-	if (ret)
-		return ret;
-
-	plat_priv->powered_on = false;
-	return cnss_power_on_device(plat_priv, false);
 }

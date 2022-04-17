@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/bitops.h>
@@ -167,8 +167,9 @@ static const struct vadc_prescale_ratio adc5_prescale_ratios[] = {
 	{.num =  1, .den = 10},
 	{.num =  1, .den = 16},
 	/* Prescale ratios for current channels below */
-	{.num = 32, .den = 100},	/* IIN_FB, IIN_SMB */
-	{.num = 16, .den = 100},	/* ICHG_SMB */
+	{.num = 32, .den = 100},	/* IIN_FB */
+	{.num = 14, .den = 100},	/* ICHG_SMB */
+	{.num = 28, .den = 100},	/* IIN_SMB */
 	{.num = 1000, .den = 305185},	/* ICHG_FB */
 	{.num = 1000, .den = 610370},	/* ICHG_FB_2X */
 };
@@ -721,11 +722,11 @@ static const struct adc5_channels adc7_chans_pmic[ADC5_MAX_CHANNEL] = {
 					SCALE_HW_CALIB_PM7_CHG_TEMP)
 	[ADC7_IIN_FB]		= ADC5_CHAN_CUR("iin_fb", 9,
 					SCALE_HW_CALIB_CUR)
-	[ADC7_IIN_SMB]		= ADC5_CHAN_CUR("iin_smb", 9,
-					SCALE_HW_CALIB_CUR)
 	[ADC7_ICHG_SMB]		= ADC5_CHAN_CUR("ichg_smb", 10,
 					SCALE_HW_CALIB_CUR)
-	[ADC7_ICHG_FB]		= ADC5_CHAN_CUR("ichg_fb", 11,
+	[ADC7_IIN_SMB]		= ADC5_CHAN_CUR("iin_smb", 11,
+					SCALE_HW_CALIB_CUR)
+	[ADC7_ICHG_FB]		= ADC5_CHAN_CUR("ichg_fb", 12,
 					SCALE_HW_CALIB_CUR_RAW)
 	[ADC7_DIE_TEMP]		= ADC5_CHAN_TEMP("die_temp", 0,
 					SCALE_HW_CALIB_PMIC_THERM_PM7)
@@ -737,18 +738,36 @@ static const struct adc5_channels adc7_chans_pmic[ADC5_MAX_CHANNEL] = {
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC7_AMUX_THM4_100K_PU]	= ADC5_CHAN_TEMP("amux_thm4_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+#ifndef OPLUS_FEATURE_CHG_BASIC
 	[ADC7_AMUX_THM5_100K_PU]	= ADC5_CHAN_TEMP("amux_thm5_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+#else
+	[ADC7_AMUX_THM5_100K_PU]	= ADC5_CHAN_VOLT("amux_thm5_pu2", 0,
+					SCALE_HW_CALIB_DEFAULT)
+#endif
 	[ADC7_AMUX_THM6_100K_PU]	= ADC5_CHAN_TEMP("amux_thm6_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
-	[ADC7_GPIO1_100K_PU]	= ADC5_CHAN_TEMP("gpio1_pu2", 0,
+	[ADC7_GPIO1_100K_PU]    = ADC5_CHAN_TEMP("gpio1_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+	[ADC7_GPIO1]	= ADC5_CHAN_VOLT("pm8350_board_id", 0,
+					SCALE_HW_CALIB_DEFAULT)
+#ifndef OPLUS_FEATURE_CHG_BASIC
 	[ADC7_GPIO2_100K_PU]	= ADC5_CHAN_TEMP("gpio2_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+#else
+	[ADC7_GPIO2_100K_PU]	= ADC5_CHAN_VOLT("gpio2_pu2", 0,
+					SCALE_HW_CALIB_DEFAULT)
+#endif
 	[ADC7_GPIO3_100K_PU]	= ADC5_CHAN_TEMP("gpio3_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
 	[ADC7_GPIO4_100K_PU]	= ADC5_CHAN_TEMP("gpio4_pu2", 0,
 					SCALE_HW_CALIB_THERM_100K_PU_PM7)
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	[ADC7_AMUX_THM5_30K_PU]	= ADC5_CHAN_VOLT("gpio1_v", 0,
+					SCALE_HW_CALIB_DEFAULT)
+	[ADC7_GPIO2_30K_PU]	= ADC5_CHAN_VOLT("gpio3_v", 0,
+					SCALE_HW_CALIB_DEFAULT)
+#endif
 };
 
 static const struct adc5_channels adc5_chans_rev2[ADC5_MAX_CHANNEL] = {
@@ -775,8 +794,6 @@ static const struct adc5_channels adc5_chans_rev2[ADC5_MAX_CHANNEL] = {
 	[ADC5_AMUX_THM5_100K_PU] = ADC5_CHAN_TEMP("amux_thm5_100k_pu", 0,
 					SCALE_HW_CALIB_THERM_100K_PULLUP)
 	[ADC5_XO_THERM_100K_PU]	= ADC5_CHAN_TEMP("xo_therm_100k_pu", 0,
-					SCALE_HW_CALIB_THERM_100K_PULLUP)
-	[ADC5_GPIO2_100K_PU]	= ADC5_CHAN_TEMP("gpio2_100k_pu", 0,
 					SCALE_HW_CALIB_THERM_100K_PULLUP)
 };
 
