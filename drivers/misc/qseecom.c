@@ -36,7 +36,7 @@
 #include <soc/qcom/qseecomi.h>
 #include <asm/cacheflush.h>
 #include "qseecom_kernel.h"
-#include <linux/crypto-qti-common.h>
+#include <crypto/ice.h>
 #include <linux/delay.h>
 #include <linux/signal.h>
 #include <linux/compat.h>
@@ -90,9 +90,7 @@
 #define TWO 2
 #define QSEECOM_UFS_ICE_CE_NUM 10
 #define QSEECOM_SDCC_ICE_CE_NUM 20
-
-/* Assume the ice device contains 32 slots (0-31) and reserve the last one for the FDE  */
-#define QSEECOM_ICE_FDE_KEY_INDEX 31
+#define QSEECOM_ICE_FDE_KEY_INDEX 0
 
 #define PHY_ADDR_4G	(1ULL<<32)
 
@@ -470,8 +468,6 @@ static void __qseecom_free_coherent_buf(uint32_t size,
 #define QSEECOM_SCM_EBUSY_WAIT_MS 30
 #define QSEECOM_SCM_EBUSY_MAX_RETRY 67
 
-#define QSEE_RESULT_FAIL_APP_BUSY 315
-
 static int __qseecom_scm_call2_locked(uint32_t smc_id, struct scm_desc *desc)
 {
 	int ret = 0;
@@ -479,14 +475,14 @@ static int __qseecom_scm_call2_locked(uint32_t smc_id, struct scm_desc *desc)
 
 	do {
 		ret = qcom_scm_qseecom_call_noretry(smc_id, desc);
-		if ((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) {
+		if (ret == -EBUSY) {
 			mutex_unlock(&app_access_lock);
 			msleep(QSEECOM_SCM_EBUSY_WAIT_MS);
 			mutex_lock(&app_access_lock);
 		}
 		if (retry_count == 33)
 			pr_warn("secure world has been busy for 1 second!\n");
-	} while (((ret == -EBUSY) || (desc && (desc->ret[0] == -QSEE_RESULT_FAIL_APP_BUSY))) &&
+	} while (ret == -EBUSY &&
 			(retry_count++ < QSEECOM_SCM_EBUSY_MAX_RETRY));
 	return ret;
 }
@@ -6411,9 +6407,9 @@ static int qseecom_enable_ice_setup(int usage)
 	int ret = 0;
 
 	if (usage == QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION)
-		ret = crypto_qti_ice_setup_ice_hw("ufs", true);
+		ret = qcom_ice_setup_ice_hw("ufs", true);
 	else if (usage == QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION)
-		ret = crypto_qti_ice_setup_ice_hw("sdcc", true);
+		ret = qcom_ice_setup_ice_hw("sdcc", true);
 
 	return ret;
 }
@@ -6423,9 +6419,9 @@ static int qseecom_disable_ice_setup(int usage)
 	int ret = 0;
 
 	if (usage == QSEOS_KM_USAGE_UFS_ICE_DISK_ENCRYPTION)
-		ret = crypto_qti_ice_setup_ice_hw("ufs", false);
+		ret = qcom_ice_setup_ice_hw("ufs", false);
 	else if (usage == QSEOS_KM_USAGE_SDCC_ICE_DISK_ENCRYPTION)
-		ret = crypto_qti_ice_setup_ice_hw("sdcc", false);
+		ret = qcom_ice_setup_ice_hw("sdcc", false);
 
 	return ret;
 }
@@ -8178,8 +8174,14 @@ long qseecom_ioctl(struct file *file,
 		atomic_dec(&data->ioctl_count);
 		wake_up_all(&data->abort_wq);
 		mutex_unlock(&app_access_lock);
-		if (ret)
+		//#ifdef OPLUS_FEATURE_BOOT_SECURITY
+		/* 2020/12/16, modify for bug778753 temp qcom CR */
+		//if (ret)
+		if (ret) {
 			pr_err("failed open_session_cmd: %d\n", ret);
+			pr_err("scm_call failed: syscall returns: 0xffffffffffffffff, 0x0\n");
+		}
+		//#endif /* OPLUS_FEATURE_BOOT_SECURITY */
 		__qseecom_clean_data_sglistinfo(data);
 		break;
 	}
@@ -8288,7 +8290,7 @@ long qseecom_ioctl(struct file *file,
 			pr_err("copy_from_user failed\n");
 			return -EFAULT;
 		}
-		crypto_qti_ice_set_fde_flag(ice_data.flag);
+		qcom_ice_set_fde_flag(ice_data.flag);
 		break;
 	}
 	case QSEECOM_IOCTL_FBE_CLEAR_KEY: {
