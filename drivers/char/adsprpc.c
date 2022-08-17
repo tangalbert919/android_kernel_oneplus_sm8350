@@ -4733,6 +4733,7 @@ static int fastrpc_internal_munmap(struct fastrpc_file *fl,
 	mutex_lock(&fl->map_mutex);
 	fastrpc_mmap_free(map, 0);
 	mutex_unlock(&fl->map_mutex);
+
 bail:
 	if (err && map) {
 		mutex_lock(&fl->map_mutex);
