@@ -869,10 +869,6 @@ config PROCESS_RECLAIM
 	 (addr, addr + size-bytes) of the process.
 
 	 Any other value is ignored.
-	 
-#ifdef OPLUS_FEATURE_HEALTHINFO
-source "mm/healthinfo/Kconfig"
-#endif /* OPLUS_FEATURE_HEALTHINFO */
 
 config MULTIPLE_KSWAPD
 	bool "Spawn multiple kswapd threads"
@@ -922,10 +918,3 @@ config DYNAMIC_TUNNING_SWAPPINESS
 	help
 	  tunning swappiess depends on file_pages size
 
-source "mm/zram_opt/Kconfig"
-source "mm/process_reclaim/Kconfig"
-#ifdef OPLUS_FEATURE_HEALTHINFO
-source "mm/healthinfo/Kconfig"
-#endif /* OPLUS_FEATURE_HEALTHINFO */
-source "mm/malloc_track/Kconfig"
-source "mm/task_mem/Kconfig"
