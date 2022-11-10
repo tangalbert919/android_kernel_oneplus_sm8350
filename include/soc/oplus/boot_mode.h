@@ -1,1 +1,1 @@
-../../../../../vendor/oplus/kernel/system/include/boot_mode.h
+system/boot_mode.h

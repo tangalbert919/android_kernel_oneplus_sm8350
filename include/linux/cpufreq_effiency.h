@@ -1,1 +1,1 @@
-../../../../vendor/oplus/kernel/power/cpufreq_effiency/cpufreq_effiency.h
+../../drivers/soc/oplus/cpufreq_effiency/cpufreq_effiency.h

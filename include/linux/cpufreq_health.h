@@ -1,1 +1,1 @@
-../../../../vendor/oplus/kernel/power/cpufreq_health/cpufreq_health.h
+../../drivers/soc/oplus/cpufreq_health/cpufreq_health.h

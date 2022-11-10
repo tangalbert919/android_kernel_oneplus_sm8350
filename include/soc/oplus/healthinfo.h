@@ -1,1 +1,1 @@
-../../../../../vendor/oplus/kernel/oplus_performance/healthinfo/main/healthinfo.h
+../../../drivers/soc/oplus/healthinfo/healthinfo.h
